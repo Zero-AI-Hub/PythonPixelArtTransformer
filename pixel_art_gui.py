@@ -1,16 +1,13 @@
 """
-Pixel Art Transformer - Interfaz Gráfica v3
+Pixel Art Transformer - Interfaz Gráfica v6
 ============================================
-Aplicación con GUI para convertir imágenes de pixel art escaladas
-a su forma real (1 pixel por pixel).
+Flujo de trabajo:
+1. Cargar imagen
+2. Seleccionar regiones (rectángulos) con las figuras
+3. Procesar cada región individualmente con su configuración
+4. Generar todas las regiones transformadas
 
-Características:
-- Zoom con rueda del ratón
-- Pan/arrastrar con click izquierdo
-- Exclusión de colores de fondo (hasta 2 colores)
-- Selección de color directamente desde la imagen (eyedropper)
-- Ajuste de offset del grid para alinear píxeles desplazados
-- Vista previa del grid en tiempo real
+Optimizado para 1920x1080
 """
 
 import tkinter as tk
@@ -20,76 +17,62 @@ import numpy as np
 from pathlib import Path
 
 
-class ZoomableCanvas(tk.Canvas):
-    """Canvas con soporte para zoom, pan y eyedropper."""
+class RegionSelectCanvas(tk.Canvas):
+    """Canvas para seleccionar regiones rectangulares."""
     
-    def __init__(self, parent, on_color_pick=None, **kwargs):
+    def __init__(self, parent, on_region_added=None, **kwargs):
         super().__init__(parent, **kwargs)
         
         self.image = None
-        self.original_image = None  # Imagen sin grid overlay
         self.photo = None
-        self.image_id = None
-        self.on_color_pick = on_color_pick
+        self.on_region_added = on_region_added
         
-        # Zoom y pan
         self.zoom_level = 1.0
-        self.min_zoom = 0.1
-        self.max_zoom = 20.0
         self.offset_x = 0
         self.offset_y = 0
+        self.img_x = 0
+        self.img_y = 0
         
-        # Para arrastrar
-        self.drag_start_x = 0
-        self.drag_start_y = 0
-        self.dragging = False
+        # Selección de rectángulo
+        self.selecting = False
+        self.select_start = None
+        self.current_rect = None
+        self.regions = []  # Lista de (x1, y1, x2, y2) en coords de imagen
         
-        # Modo eyedropper
-        self.eyedropper_mode = False
-        self.eyedropper_callback = None
+        # Modo
+        self.mode = 'select'  # 'select' o 'pan'
         
-        # Bindings
         self.bind('<MouseWheel>', self.on_mousewheel)
-        self.bind('<Button-4>', self.on_mousewheel)  # Linux scroll up
-        self.bind('<Button-5>', self.on_mousewheel)  # Linux scroll down
-        self.bind('<ButtonPress-1>', self.on_click)
-        self.bind('<B1-Motion>', self.on_drag)
-        self.bind('<ButtonRelease-1>', self.on_drag_end)
-        self.bind('<Configure>', self.on_resize)
-        self.bind('<Motion>', self.on_mouse_move)
+        self.bind('<Button-4>', self.on_mousewheel)
+        self.bind('<Button-5>', self.on_mousewheel)
+        self.bind('<ButtonPress-1>', self.on_press)
+        self.bind('<B1-Motion>', self.on_motion)
+        self.bind('<ButtonRelease-1>', self.on_release)
+        self.bind('<ButtonPress-3>', self.on_pan_start)
+        self.bind('<B3-Motion>', self.on_pan)
+        self.bind('<Configure>', lambda e: self.redraw())
         
-    def set_image(self, image, original=None):
-        """Establece la imagen a mostrar."""
+    def set_image(self, image):
         self.image = image
-        self.original_image = original if original else image
+        self.regions = []
         self.reset_view()
         self.redraw()
         
     def reset_view(self):
-        """Resetea zoom y posición."""
         if self.image is None:
             return
-            
         self.update_idletasks()
         canvas_w = self.winfo_width()
         canvas_h = self.winfo_height()
-        
-        if canvas_w < 10 or canvas_h < 10:
-            self.zoom_level = 1.0
-        else:
+        if canvas_w > 10 and canvas_h > 10:
             img_w, img_h = self.image.size
-            scale_x = canvas_w / img_w
-            scale_y = canvas_h / img_h
-            self.zoom_level = min(scale_x, scale_y, 4.0)
-        
+            self.zoom_level = min(canvas_w / img_w, canvas_h / img_h, 2.0)
         self.offset_x = 0
         self.offset_y = 0
         
     def redraw(self):
-        """Redibuja la imagen con el zoom y offset actuales."""
         if self.image is None:
             return
-            
         self.delete("all")
         
         img_w, img_h = self.image.size
@@ -103,279 +86,255 @@ class ZoomableCanvas(tk.Canvas):
         canvas_h = self.winfo_height()
         self.img_x = (canvas_w - new_w) // 2 + self.offset_x
         self.img_y = (canvas_h - new_h) // 2 + self.offset_y
-        self.img_w = new_w
-        self.img_h = new_h
         
-        self.image_id = self.create_image(self.img_x, self.img_y, anchor=tk.NW, image=self.photo)
+        self.create_image(self.img_x, self.img_y, anchor=tk.NW, image=self.photo)
         
-        # Mostrar nivel de zoom y modo
+        # Dibujar regiones existentes
+        for i, (x1, y1, x2, y2) in enumerate(self.regions):
+            sx1 = self.img_x + int(x1 * self.zoom_level)
+            sy1 = self.img_y + int(y1 * self.zoom_level)
+            sx2 = self.img_x + int(x2 * self.zoom_level)
+            sy2 = self.img_y + int(y2 * self.zoom_level)
+            self.create_rectangle(sx1, sy1, sx2, sy2, outline='#00ff88', width=2, tags=f'region_{i}')
+            self.create_text(sx1 + 5, sy1 + 5, text=str(i + 1), fill='#00ff88', 
+                           anchor=tk.NW, font=('Segoe UI', 10, 'bold'))
+        
+        # Info
+        zoom_pct = int(self.zoom_level * 100)
+        self.create_text(10, 10, text=f"Zoom: {zoom_pct}% | Regiones: {len(self.regions)}", 
+                        fill='#00ff88', anchor=tk.NW, font=('Segoe UI', 9))
+        self.create_text(10, 28, text="Click+arrastrar: seleccionar | Click derecho: mover", 
+                        fill='#888888', anchor=tk.NW, font=('Segoe UI', 8))
+        
+    def screen_to_image(self, sx, sy):
+        ix = int((sx - self.img_x) / self.zoom_level)
+        iy = int((sy - self.img_y) / self.zoom_level)
+        if self.image:
+            ix = max(0, min(ix, self.image.size[0]))
+            iy = max(0, min(iy, self.image.size[1]))
+        return ix, iy
+        
+    def on_press(self, event):
+        self.selecting = True
+        self.select_start = (event.x, event.y)
+        
+    def on_motion(self, event):
+        if not self.selecting or not self.select_start:
+            return
+        if self.current_rect:
+            self.delete(self.current_rect)
+        self.current_rect = self.create_rectangle(
+            self.select_start[0], self.select_start[1], event.x, event.y,
+            outline='#e94560', width=2, dash=(4, 4)
+        )
+        
+    def on_release(self, event):
+        if not self.selecting or not self.select_start:
+            return
+        self.selecting = False
+        if self.current_rect:
+            self.delete(self.current_rect)
+            self.current_rect = None
+            
+        # Convertir a coords de imagen
+        x1, y1 = self.screen_to_image(*self.select_start)
+        x2, y2 = self.screen_to_image(event.x, event.y)
+        
+        # Normalizar
+        if x1 > x2: x1, x2 = x2, x1
+        if y1 > y2: y1, y2 = y2, y1
+        
+        # Mínimo 10x10 pixeles
+        if x2 - x1 >= 10 and y2 - y1 >= 10:
+            self.regions.append((x1, y1, x2, y2))
+            if self.on_region_added:
+                self.on_region_added(len(self.regions) - 1, (x1, y1, x2, y2))
+            self.redraw()
+            
+        self.select_start = None
+        
+    def on_pan_start(self, event):
+        self.pan_start = (event.x, event.y)
+        
+    def on_pan(self, event):
+        if hasattr(self, 'pan_start'):
+            dx = event.x - self.pan_start[0]
+            dy = event.y - self.pan_start[1]
+            self.offset_x += dx
+            self.offset_y += dy
+            self.pan_start = (event.x, event.y)
+            self.redraw()
+            
+    def on_mousewheel(self, event):
+        if self.image is None:
+            return
+        factor = 1.2 if (event.num == 4 or event.delta > 0) else 0.8
+        new_zoom = max(0.1, min(10.0, self.zoom_level * factor))
+        if new_zoom != self.zoom_level:
+            canvas_w = self.winfo_width()
+            canvas_h = self.winfo_height()
+            mouse_x = event.x - canvas_w // 2
+            mouse_y = event.y - canvas_h // 2
+            ratio = new_zoom / self.zoom_level
+            self.offset_x = int(mouse_x - (mouse_x - self.offset_x) * ratio)
+            self.offset_y = int(mouse_y - (mouse_y - self.offset_y) * ratio)
+            self.zoom_level = new_zoom
+            self.redraw()
+            
+    def remove_region(self, index):
+        if 0 <= index < len(self.regions):
+            del self.regions[index]
+            self.redraw()
+            
+    def clear_regions(self):
+        self.regions = []
+        self.redraw()
+        
+    def get_regions(self):
+        return self.regions.copy()
+
+
+class RegionEditorCanvas(tk.Canvas):
+    """Canvas para editar una región individual con grid."""
+    
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, **kwargs)
+        
+        self.image = None
+        self.photo = None
+        self.zoom_level = 1.0
+        self.offset_x = 0
+        self.offset_y = 0
+        self.img_x = 0
+        self.img_y = 0
+        
+        # Eyedropper
+        self.eyedropper_mode = False
+        self.eyedropper_callback = None
+        
+        self.bind('<MouseWheel>', self.on_mousewheel)
+        self.bind('<ButtonPress-1>', self.on_click)
+        self.bind('<B1-Motion>', self.on_drag)
+        self.bind('<ButtonRelease-1>', lambda e: setattr(self, 'dragging', False))
+        self.bind('<Configure>', lambda e: self.redraw())
+        
+        self.dragging = False
+        self.drag_start = (0, 0)
+        
+    def set_image(self, image):
+        self.image = image
+        self.reset_view()
+        self.redraw()
+        
+    def reset_view(self):
+        if self.image is None:
+            return
+        self.update_idletasks()
+        canvas_w = self.winfo_width()
+        canvas_h = self.winfo_height()
+        if canvas_w > 10 and canvas_h > 10:
+            img_w, img_h = self.image.size
+            self.zoom_level = min(canvas_w / img_w, canvas_h / img_h, 4.0)
+        self.offset_x = 0
+        self.offset_y = 0
+        
+    def redraw(self):
+        if self.image is None:
+            return
+        self.delete("all")
+        
+        img_w, img_h = self.image.size
+        new_w = max(1, int(img_w * self.zoom_level))
+        new_h = max(1, int(img_h * self.zoom_level))
+        
+        resized = self.image.resize((new_w, new_h), Image.Resampling.NEAREST)
+        self.photo = ImageTk.PhotoImage(resized)
+        
+        canvas_w = self.winfo_width()
+        canvas_h = self.winfo_height()
+        self.img_x = (canvas_w - new_w) // 2 + self.offset_x
+        self.img_y = (canvas_h - new_h) // 2 + self.offset_y
+        
+        self.create_image(self.img_x, self.img_y, anchor=tk.NW, image=self.photo)
+        
         zoom_pct = int(self.zoom_level * 100)
         mode_text = " [🎯 EYEDROPPER]" if self.eyedropper_mode else ""
         self.create_text(10, 10, text=f"Zoom: {zoom_pct}%{mode_text}", 
                         fill='#00ff88', anchor=tk.NW, font=('Segoe UI', 9))
         
     def enable_eyedropper(self, callback):
-        """Activa el modo eyedropper."""
         self.eyedropper_mode = True
         self.eyedropper_callback = callback
         self.config(cursor='crosshair')
-        self.redraw()
         
     def disable_eyedropper(self):
-        """Desactiva el modo eyedropper."""
         self.eyedropper_mode = False
         self.eyedropper_callback = None
         self.config(cursor='')
-        self.redraw()
         
-    def screen_to_image_coords(self, screen_x, screen_y):
-        """Convierte coordenadas de pantalla a coordenadas de imagen."""
-        if self.image is None:
-            return None, None
-            
-        # Posición relativa a la imagen mostrada
-        rel_x = screen_x - self.img_x
-        rel_y = screen_y - self.img_y
-        
-        # Escalar a coordenadas de imagen original
-        img_x = int(rel_x / self.zoom_level)
-        img_y = int(rel_y / self.zoom_level)
-        
-        # Verificar límites
-        img_w, img_h = self.original_image.size
-        if 0 <= img_x < img_w and 0 <= img_y < img_h:
-            return img_x, img_y
-        return None, None
-        
-    def on_mouse_move(self, event):
-        """Muestra información del pixel bajo el cursor."""
-        if self.eyedropper_mode and self.original_image:
-            img_x, img_y = self.screen_to_image_coords(event.x, event.y)
-            if img_x is not None:
-                color = self.original_image.getpixel((img_x, img_y))[:3]
-                # Mostrar preview del color en algún lado si queremos
+    def screen_to_image(self, sx, sy):
+        ix = int((sx - self.img_x) / self.zoom_level)
+        iy = int((sy - self.img_y) / self.zoom_level)
+        return ix, iy
         
     def on_click(self, event):
-        """Maneja click - eyedropper o inicio de arrastre."""
-        if self.eyedropper_mode and self.original_image:
-            img_x, img_y = self.screen_to_image_coords(event.x, event.y)
-            if img_x is not None:
-                color = self.original_image.getpixel((img_x, img_y))[:3]
+        if self.eyedropper_mode and self.image:
+            ix, iy = self.screen_to_image(event.x, event.y)
+            if 0 <= ix < self.image.size[0] and 0 <= iy < self.image.size[1]:
+                color = self.image.getpixel((ix, iy))[:3]
                 if self.eyedropper_callback:
                     self.eyedropper_callback(color)
-                self.disable_eyedropper()
-                return
-        
-        # Modo normal: iniciar arrastre
-        self.drag_start_x = event.x
-        self.drag_start_y = event.y
+            self.disable_eyedropper()
+            return
         self.dragging = True
+        self.drag_start = (event.x, event.y)
         self.config(cursor='fleur')
         
+    def on_drag(self, event):
+        if not self.dragging:
+            return
+        dx = event.x - self.drag_start[0]
+        dy = event.y - self.drag_start[1]
+        self.offset_x += dx
+        self.offset_y += dy
+        self.drag_start = (event.x, event.y)
+        self.redraw()
+        
     def on_mousewheel(self, event):
-        """Maneja el zoom con la rueda del ratón."""
         if self.image is None:
             return
-            
-        if event.num == 4 or event.delta > 0:
-            factor = 1.2
-        else:
-            factor = 0.8
-            
-        new_zoom = self.zoom_level * factor
-        new_zoom = max(self.min_zoom, min(self.max_zoom, new_zoom))
-        
+        factor = 1.2 if (event.num == 4 or event.delta > 0) else 0.8
+        new_zoom = max(0.1, min(20.0, self.zoom_level * factor))
         if new_zoom != self.zoom_level:
             canvas_w = self.winfo_width()
             canvas_h = self.winfo_height()
             mouse_x = event.x - canvas_w // 2
             mouse_y = event.y - canvas_h // 2
-            
             ratio = new_zoom / self.zoom_level
             self.offset_x = int(mouse_x - (mouse_x - self.offset_x) * ratio)
             self.offset_y = int(mouse_y - (mouse_y - self.offset_y) * ratio)
-            
             self.zoom_level = new_zoom
             self.redraw()
-        
-    def on_drag(self, event):
-        """Arrastra la imagen."""
-        if not self.dragging or self.eyedropper_mode:
-            return
-            
-        dx = event.x - self.drag_start_x
-        dy = event.y - self.drag_start_y
-        
-        self.offset_x += dx
-        self.offset_y += dy
-        
-        self.drag_start_x = event.x
-        self.drag_start_y = event.y
-        
-        self.redraw()
-        
-    def on_drag_end(self, event):
-        """Termina el arrastre."""
-        self.dragging = False
-        if not self.eyedropper_mode:
-            self.config(cursor='')
-        
-    def on_resize(self, event):
-        """Redibuja al cambiar tamaño."""
-        if self.image is not None:
-            self.redraw()
-
-
-class ColorExclusionFrame(ttk.LabelFrame):
-    """Frame para seleccionar colores a excluir con soporte para eyedropper."""
-    
-    def __init__(self, parent, on_change_callback=None, get_canvas_callback=None, **kwargs):
-        super().__init__(parent, text="🚫 Excluir Colores", **kwargs)
-        
-        self.on_change = on_change_callback
-        self.get_canvas = get_canvas_callback
-        self.excluded_colors = []
-        self.pending_color_index = None
-        
-        self.create_widgets()
-        
-    def create_widgets(self):
-        """Crea los widgets del frame."""
-        ttk.Label(self, text="Click derecho: selector | Click izq: de imagen", 
-                 style='Info.TLabel').pack(anchor=tk.W, pady=(0, 5))
-        
-        colors_frame = ttk.Frame(self)
-        colors_frame.pack(fill=tk.X)
-        
-        # Color 1
-        self.color1_frame = tk.Frame(colors_frame, bg='#333333', width=40, height=30,
-                                     relief=tk.RAISED, bd=2)
-        self.color1_frame.pack(side=tk.LEFT, padx=(0, 5))
-        self.color1_frame.bind('<Button-1>', lambda e: self.start_eyedropper(0))
-        self.color1_frame.bind('<Button-3>', lambda e: self.pick_color_dialog(0))
-        self.color1_frame.pack_propagate(False)
-        self.color1_label = tk.Label(self.color1_frame, text="+", fg='#888888', bg='#333333')
-        self.color1_label.pack(expand=True)
-        self.color1_label.bind('<Button-1>', lambda e: self.start_eyedropper(0))
-        self.color1_label.bind('<Button-3>', lambda e: self.pick_color_dialog(0))
-        
-        # Color 2
-        self.color2_frame = tk.Frame(colors_frame, bg='#333333', width=40, height=30,
-                                     relief=tk.RAISED, bd=2)
-        self.color2_frame.pack(side=tk.LEFT, padx=(0, 5))
-        self.color2_frame.bind('<Button-1>', lambda e: self.start_eyedropper(1))
-        self.color2_frame.bind('<Button-3>', lambda e: self.pick_color_dialog(1))
-        self.color2_frame.pack_propagate(False)
-        self.color2_label = tk.Label(self.color2_frame, text="+", fg='#888888', bg='#333333')
-        self.color2_label.pack(expand=True)
-        self.color2_label.bind('<Button-1>', lambda e: self.start_eyedropper(1))
-        self.color2_label.bind('<Button-3>', lambda e: self.pick_color_dialog(1))
-        
-        self.color_frames = [self.color1_frame, self.color2_frame]
-        self.color_labels = [self.color1_label, self.color2_label]
-        
-        # Botón limpiar
-        clear_btn = ttk.Button(colors_frame, text="✕", width=3, 
-                              command=self.clear_colors)
-        clear_btn.pack(side=tk.LEFT, padx=(10, 0))
-        
-        # Info
-        self.info_label = ttk.Label(self, text="Sin colores excluídos", style='Info.TLabel')
-        self.info_label.pack(anchor=tk.W, pady=(5, 0))
-        
-    def start_eyedropper(self, index):
-        """Inicia el modo eyedropper para seleccionar color de la imagen."""
-        if self.get_canvas:
-            canvas = self.get_canvas()
-            if canvas and canvas.original_image:
-                self.pending_color_index = index
-                canvas.enable_eyedropper(self.on_eyedropper_pick)
-                self.info_label.config(text="🎯 Click en la imagen para seleccionar color...")
-                
-    def on_eyedropper_pick(self, rgb):
-        """Callback cuando se selecciona un color con eyedropper."""
-        if self.pending_color_index is not None:
-            self.set_color(self.pending_color_index, rgb)
-            self.pending_color_index = None
-            
-    def pick_color_dialog(self, index):
-        """Abre el selector de color tradicional."""
-        color = colorchooser.askcolor(title=f"Seleccionar color {index + 1} a excluir")
-        if color[0]:
-            rgb = tuple(int(c) for c in color[0])
-            self.set_color(index, rgb)
-            
-    def set_color(self, index, rgb):
-        """Establece un color en el índice dado."""
-        if index < len(self.excluded_colors):
-            self.excluded_colors[index] = rgb
-        else:
-            self.excluded_colors.append(rgb)
-        
-        hex_color = '#{:02x}{:02x}{:02x}'.format(*rgb)
-        self.color_frames[index].config(bg=hex_color)
-        self.color_labels[index].config(text="", bg=hex_color)
-        
-        self.update_info()
-        
-        if self.on_change:
-            self.on_change()
-                
-    def clear_colors(self):
-        """Limpia todos los colores."""
-        self.excluded_colors = []
-        for frame, label in zip(self.color_frames, self.color_labels):
-            frame.config(bg='#333333')
-            label.config(text="+", bg='#333333', fg='#888888')
-        self.update_info()
-        
-        if self.on_change:
-            self.on_change()
-            
-    def update_info(self):
-        """Actualiza el texto informativo."""
-        count = len(self.excluded_colors)
-        if count == 0:
-            self.info_label.config(text="Sin colores excluídos")
-        else:
-            self.info_label.config(text=f"{count} color(es) serán transparentes")
-            
-    def get_excluded_colors(self):
-        """Retorna la lista de colores excluídos."""
-        return self.excluded_colors.copy()
 
 
 class PixelArtTransformerGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("🎨 Pixel Art Transformer v3")
-        self.root.geometry("1350x900")
-        self.root.minsize(1100, 750)
+        self.root.title("🎨 Pixel Art Transformer v6")
+        self.root.geometry("1280x720")
+        self.root.minsize(1024, 600)
         
-        # Variables
         self.original_image = None
         self.original_path = None
-        self.result_image = None
-        self.grid_image = None
-        self.preview_image = None
-        self.detected_size = tk.IntVar(value=0)
-        self.manual_size = tk.IntVar(value=16)
-        self.use_auto_detect = tk.BooleanVar(value=True)
-        self.show_grid_overlay = tk.BooleanVar(value=True)
-        self.show_center_markers = tk.BooleanVar(value=True)
+        self.regions = []  # Lista de dicts con config por región
+        self.current_region_idx = -1
+        self.results = {}  # region_idx -> result_image
         
-        # Grid offset
-        self.grid_offset_x = tk.IntVar(value=0)
-        self.grid_offset_y = tk.IntVar(value=0)
-        
-        # Estilo
         self.setup_style()
-        
-        # Layout principal
         self.create_widgets()
+        self.show_step(1)
         
     def setup_style(self):
-        """Configura el estilo visual de la aplicación."""
         style = ttk.Style()
         style.theme_use('clam')
         
@@ -387,423 +346,482 @@ class PixelArtTransformerGUI:
         
         style.configure('TFrame', background=self.bg_color)
         style.configure('TLabel', background=self.bg_color, foreground=fg_color, font=('Segoe UI', 10))
-        style.configure('Title.TLabel', font=('Segoe UI', 14, 'bold'), foreground=accent_color)
+        style.configure('Title.TLabel', font=('Segoe UI', 12, 'bold'), foreground=accent_color)
+        style.configure('Step.TLabel', font=('Segoe UI', 11, 'bold'), foreground='#00ff88')
         style.configure('Info.TLabel', font=('Segoe UI', 9), foreground='#888888')
-        style.configure('TButton', font=('Segoe UI', 10), padding=8)
-        style.configure('Accent.TButton', font=('Segoe UI', 11, 'bold'))
+        style.configure('TButton', font=('Segoe UI', 10), padding=5)
+        style.configure('Accent.TButton', font=('Segoe UI', 10, 'bold'))
         style.configure('TCheckbutton', background=self.bg_color, foreground=fg_color)
         style.configure('TRadiobutton', background=self.bg_color, foreground=fg_color)
-        style.configure('TScale', background=self.bg_color)
-        style.configure('TSpinbox', font=('Segoe UI', 10))
         style.configure('TLabelframe', background=self.bg_color, foreground=fg_color)
-        style.configure('TLabelframe.Label', background=self.bg_color, foreground=accent_color, font=('Segoe UI', 10, 'bold'))
+        style.configure('TLabelframe.Label', background=self.bg_color, foreground=accent_color, font=('Segoe UI', 9, 'bold'))
         
     def create_widgets(self):
-        """Crea todos los widgets de la interfaz."""
-        main_frame = ttk.Frame(self.root, padding=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # Header
+        header = ttk.Frame(self.root)
+        header.pack(fill=tk.X, padx=10, pady=5)
         
-        left_panel = ttk.Frame(main_frame, width=340)
-        left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
-        left_panel.pack_propagate(False)
+        ttk.Label(header, text="🎨 Pixel Art Transformer", style='Title.TLabel').pack(side=tk.LEFT)
         
-        right_panel = ttk.Frame(main_frame)
-        right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        self.step_label = ttk.Label(header, text="Paso 1: Cargar imagen", style='Step.TLabel')
+        self.step_label.pack(side=tk.RIGHT)
         
-        self.create_control_panel(left_panel)
-        self.create_preview_panel(right_panel)
+        # Main container
+        self.main_container = ttk.Frame(self.root)
+        self.main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
-    def create_control_panel(self, parent):
-        """Crea el panel de controles."""
-        canvas = tk.Canvas(parent, bg=self.bg_color, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
+        # Step 1: Load image
+        self.step1_frame = ttk.Frame(self.main_container)
+        self.create_step1()
         
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
+        # Step 2: Select regions
+        self.step2_frame = ttk.Frame(self.main_container)
+        self.create_step2()
         
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw", width=320)
-        canvas.configure(yscrollcommand=scrollbar.set)
+        # Step 3: Edit regions
+        self.step3_frame = ttk.Frame(self.main_container)
+        self.create_step3()
         
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        # Step 4: Generate
+        self.step4_frame = ttk.Frame(self.main_container)
+        self.create_step4()
         
-        # Título
-        title = ttk.Label(scrollable_frame, text="🎨 Pixel Art Transformer", style='Title.TLabel')
-        title.pack(pady=(0, 15))
+    def create_step1(self):
+        """Paso 1: Cargar imagen"""
+        center = ttk.Frame(self.step1_frame)
+        center.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         
-        # --- Sección: Cargar imagen ---
-        load_frame = ttk.LabelFrame(scrollable_frame, text="📂 Imagen", padding=10)
-        load_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(center, text="Arrastra una imagen o haz click para cargar", 
+                 style='Info.TLabel').pack(pady=10)
         
-        self.load_btn = ttk.Button(load_frame, text="Cargar Imagen", command=self.load_image)
-        self.load_btn.pack(fill=tk.X)
+        load_btn = ttk.Button(center, text="📂 Cargar Imagen", command=self.load_image, 
+                             style='Accent.TButton')
+        load_btn.pack(pady=10)
         
-        self.file_label = ttk.Label(load_frame, text="Ningún archivo seleccionado", style='Info.TLabel', wraplength=280)
-        self.file_label.pack(pady=(5, 0))
+        self.load_info = ttk.Label(center, text="", style='Info.TLabel')
+        self.load_info.pack()
         
-        self.size_label = ttk.Label(load_frame, text="", style='Info.TLabel')
-        self.size_label.pack()
+    def create_step2(self):
+        """Paso 2: Seleccionar regiones"""
+        # Panel izquierdo - controles
+        left = ttk.Frame(self.step2_frame, width=200)
+        left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
+        left.pack_propagate(False)
         
-        # --- Sección: Configuración del Grid ---
-        grid_frame = ttk.LabelFrame(scrollable_frame, text="📐 Tamaño del Grid", padding=10)
-        grid_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(left, text="Selecciona las figuras", style='Title.TLabel').pack(pady=5)
+        ttk.Label(left, text="Dibuja rectángulos sobre\ncada sprite o figura", 
+                 style='Info.TLabel').pack(pady=5)
         
-        auto_radio = ttk.Radiobutton(
-            grid_frame, text="Auto-detectar", 
-            variable=self.use_auto_detect, value=True,
-            command=self.on_grid_mode_change
-        )
-        auto_radio.pack(anchor=tk.W)
+        self.regions_list = tk.Listbox(left, bg='#16213e', fg='#eaeaea', height=8,
+                                       selectbackground='#e94560')
+        self.regions_list.pack(fill=tk.X, padx=5, pady=5)
         
-        self.auto_result_label = ttk.Label(grid_frame, text="", style='Info.TLabel')
-        self.auto_result_label.pack(anchor=tk.W, padx=(20, 0))
+        btn_frame = ttk.Frame(left)
+        btn_frame.pack(fill=tk.X, padx=5)
         
-        manual_radio = ttk.Radiobutton(
-            grid_frame, text="Manual:", 
-            variable=self.use_auto_detect, value=False,
-            command=self.on_grid_mode_change
-        )
-        manual_radio.pack(anchor=tk.W, pady=(10, 0))
+        ttk.Button(btn_frame, text="🗑️ Eliminar", command=self.remove_selected_region).pack(side=tk.LEFT)
+        ttk.Button(btn_frame, text="🧹 Limpiar", command=self.clear_all_regions).pack(side=tk.RIGHT)
         
-        slider_frame = ttk.Frame(grid_frame)
-        slider_frame.pack(fill=tk.X, padx=(20, 0))
+        ttk.Separator(left, orient='horizontal').pack(fill=tk.X, pady=10)
         
-        self.size_slider = ttk.Scale(
-            slider_frame, from_=2, to=64, 
-            variable=self.manual_size, orient=tk.HORIZONTAL,
-            command=self.on_slider_change
-        )
-        self.size_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        nav_frame = ttk.Frame(left)
+        nav_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        self.size_value_label = ttk.Label(slider_frame, text="16x16", width=6)
-        self.size_value_label.pack(side=tk.RIGHT)
+        ttk.Button(nav_frame, text="← Atrás", command=lambda: self.show_step(1)).pack(side=tk.LEFT)
+        self.step2_next = ttk.Button(nav_frame, text="Continuar →", command=self.go_to_step3,
+                                     style='Accent.TButton')
+        self.step2_next.pack(side=tk.RIGHT)
         
-        # --- Sección: Offset del Grid ---
-        offset_frame = ttk.LabelFrame(scrollable_frame, text="↔️ Offset del Grid", padding=10)
-        offset_frame.pack(fill=tk.X, pady=(0, 10))
+        # Canvas principal
+        self.region_canvas = RegionSelectCanvas(self.step2_frame, bg='#0f0f23', 
+                                                highlightthickness=0,
+                                                on_region_added=self.on_region_added)
+        self.region_canvas.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
         
-        ttk.Label(offset_frame, text="Ajusta si los píxeles están desalineados:", 
-                 style='Info.TLabel').pack(anchor=tk.W, pady=(0, 5))
+    def create_step3(self):
+        """Paso 3: Editar cada región"""
+        # Panel izquierdo - controles
+        left = ttk.Frame(self.step3_frame, width=220)
+        left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
+        left.pack_propagate(False)
         
-        offset_controls = ttk.Frame(offset_frame)
-        offset_controls.pack(fill=tk.X)
+        # Navegación entre regiones
+        nav_region = ttk.Frame(left)
+        nav_region.pack(fill=tk.X, padx=5, pady=5)
         
-        # Offset X
-        x_frame = ttk.Frame(offset_controls)
-        x_frame.pack(side=tk.LEFT, expand=True, fill=tk.X)
-        ttk.Label(x_frame, text="X:", width=3).pack(side=tk.LEFT)
-        self.offset_x_spin = ttk.Spinbox(
-            x_frame, from_=-32, to=32, width=5,
-            textvariable=self.grid_offset_x,
-            command=self.on_offset_change
-        )
-        self.offset_x_spin.pack(side=tk.LEFT, padx=(0, 10))
-        self.offset_x_spin.bind('<Return>', lambda e: self.on_offset_change())
-        self.offset_x_spin.bind('<FocusOut>', lambda e: self.on_offset_change())
+        self.prev_region_btn = ttk.Button(nav_region, text="◀", width=3, command=self.prev_region)
+        self.prev_region_btn.pack(side=tk.LEFT)
         
-        # Offset Y
-        y_frame = ttk.Frame(offset_controls)
-        y_frame.pack(side=tk.LEFT, expand=True, fill=tk.X)
-        ttk.Label(y_frame, text="Y:", width=3).pack(side=tk.LEFT)
-        self.offset_y_spin = ttk.Spinbox(
-            y_frame, from_=-32, to=32, width=5,
-            textvariable=self.grid_offset_y,
-            command=self.on_offset_change
-        )
-        self.offset_y_spin.pack(side=tk.LEFT)
-        self.offset_y_spin.bind('<Return>', lambda e: self.on_offset_change())
-        self.offset_y_spin.bind('<FocusOut>', lambda e: self.on_offset_change())
+        self.region_indicator = ttk.Label(nav_region, text="Región 1/1", style='Title.TLabel')
+        self.region_indicator.pack(side=tk.LEFT, expand=True)
         
-        # Botón reset offset
-        reset_offset_btn = ttk.Button(offset_controls, text="Reset", width=5,
-                                      command=self.reset_offset)
-        reset_offset_btn.pack(side=tk.RIGHT)
+        self.next_region_btn = ttk.Button(nav_region, text="▶", width=3, command=self.next_region)
+        self.next_region_btn.pack(side=tk.RIGHT)
         
-        # --- Sección: Exclusión de colores ---
-        self.color_exclusion = ColorExclusionFrame(
-            scrollable_frame, 
-            on_change_callback=self.update_preview,
-            get_canvas_callback=self.get_original_canvas,
-            padding=10
-        )
-        self.color_exclusion.pack(fill=tk.X, pady=(0, 10))
+        ttk.Separator(left, orient='horizontal').pack(fill=tk.X, pady=5)
         
-        # --- Sección: Opciones de visualización ---
-        viz_frame = ttk.LabelFrame(scrollable_frame, text="👁️ Visualización", padding=10)
-        viz_frame.pack(fill=tk.X, pady=(0, 10))
+        # Grid size
+        grid_frame = ttk.LabelFrame(left, text="📐 Grid", padding=5)
+        grid_frame.pack(fill=tk.X, padx=5, pady=3)
         
-        grid_check = ttk.Checkbutton(
-            viz_frame, text="Mostrar grid",
-            variable=self.show_grid_overlay,
-            command=self.update_preview
-        )
-        grid_check.pack(anchor=tk.W)
+        self.auto_detect = tk.BooleanVar(value=True)
+        ttk.Checkbutton(grid_frame, text="Auto-detectar", variable=self.auto_detect,
+                       command=self.update_region_preview).pack(anchor=tk.W)
         
-        center_check = ttk.Checkbutton(
-            viz_frame, text="Mostrar puntos centrales",
-            variable=self.show_center_markers,
-            command=self.update_preview
-        )
-        center_check.pack(anchor=tk.W)
+        size_frame = ttk.Frame(grid_frame)
+        size_frame.pack(fill=tk.X)
+        ttk.Label(size_frame, text="Tamaño:").pack(side=tk.LEFT)
+        self.grid_size = tk.IntVar(value=16)
+        self.grid_spin = ttk.Spinbox(size_frame, from_=2, to=64, width=4,
+                                     textvariable=self.grid_size, command=self.update_region_preview)
+        self.grid_spin.pack(side=tk.RIGHT)
         
-        zoom_frame = ttk.Frame(viz_frame)
-        zoom_frame.pack(fill=tk.X, pady=(10, 0))
+        # Offset
+        offset_frame = ttk.LabelFrame(left, text="↔️ Offset", padding=5)
+        offset_frame.pack(fill=tk.X, padx=5, pady=3)
         
-        ttk.Label(zoom_frame, text="Zoom:", style='Info.TLabel').pack(side=tk.LEFT)
+        off_row = ttk.Frame(offset_frame)
+        off_row.pack(fill=tk.X)
+        ttk.Label(off_row, text="X:").pack(side=tk.LEFT)
+        self.offset_x = tk.IntVar(value=0)
+        ttk.Spinbox(off_row, from_=-32, to=32, width=4, textvariable=self.offset_x,
+                   command=self.update_region_preview).pack(side=tk.LEFT, padx=2)
+        ttk.Label(off_row, text="Y:").pack(side=tk.LEFT)
+        self.offset_y = tk.IntVar(value=0)
+        ttk.Spinbox(off_row, from_=-32, to=32, width=4, textvariable=self.offset_y,
+                   command=self.update_region_preview).pack(side=tk.LEFT)
         
-        reset_zoom_btn = ttk.Button(zoom_frame, text="Reset", width=6,
-                                    command=self.reset_zoom)
-        reset_zoom_btn.pack(side=tk.RIGHT)
+        # Bit depth
+        bits_frame = ttk.LabelFrame(left, text="🎨 Colores", padding=5)
+        bits_frame.pack(fill=tk.X, padx=5, pady=3)
         
-        ttk.Label(viz_frame, text="Rueda: zoom | Arrastrar: mover", 
-                 style='Info.TLabel').pack(anchor=tk.W, pady=(5, 0))
+        self.bits = tk.IntVar(value=8)
+        bits_options = [("8-bit", 8), ("6-bit", 6), ("4-bit", 4), ("3-bit", 3)]
+        for txt, val in bits_options:
+            ttk.Radiobutton(bits_frame, text=txt, value=val, variable=self.bits,
+                           command=self.update_region_preview).pack(side=tk.LEFT)
         
-        # --- Sección: Acciones ---
-        action_frame = ttk.LabelFrame(scrollable_frame, text="⚡ Acciones", padding=10)
-        action_frame.pack(fill=tk.X, pady=(0, 10))
+        # Excluir colores
+        exc_frame = ttk.LabelFrame(left, text="🚫 Excluir", padding=5)
+        exc_frame.pack(fill=tk.X, padx=5, pady=3)
         
-        self.transform_btn = ttk.Button(
-            action_frame, text="✨ Transformar", 
-            command=self.transform_image, style='Accent.TButton'
-        )
-        self.transform_btn.pack(fill=tk.X, pady=(0, 5))
-        self.transform_btn.state(['disabled'])
+        color_row = ttk.Frame(exc_frame)
+        color_row.pack(fill=tk.X)
         
-        self.save_btn = ttk.Button(
-            action_frame, text="💾 Guardar Resultado",
-            command=self.save_result
-        )
-        self.save_btn.pack(fill=tk.X, pady=(0, 5))
-        self.save_btn.state(['disabled'])
+        self.exc_color1 = tk.Frame(color_row, bg='#333', width=25, height=20, relief=tk.RAISED, bd=1)
+        self.exc_color1.pack(side=tk.LEFT, padx=2)
+        self.exc_color1.bind('<Button-1>', lambda e: self.pick_exclude_color(0))
         
-        self.save_grid_btn = ttk.Button(
-            action_frame, text="📏 Guardar Grid",
-            command=self.save_grid
-        )
-        self.save_grid_btn.pack(fill=tk.X)
-        self.save_grid_btn.state(['disabled'])
+        self.exc_color2 = tk.Frame(color_row, bg='#333', width=25, height=20, relief=tk.RAISED, bd=1)
+        self.exc_color2.pack(side=tk.LEFT, padx=2)
+        self.exc_color2.bind('<Button-1>', lambda e: self.pick_exclude_color(1))
         
-        # --- Info del resultado ---
-        result_frame = ttk.LabelFrame(scrollable_frame, text="📊 Resultado", padding=10)
-        result_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Button(color_row, text="✕", width=2, command=self.clear_exclude_colors).pack(side=tk.LEFT, padx=5)
         
-        self.result_info = ttk.Label(result_frame, text="Transforma una imagen para ver los resultados", style='Info.TLabel', wraplength=280)
-        self.result_info.pack()
+        tol_row = ttk.Frame(exc_frame)
+        tol_row.pack(fill=tk.X, pady=3)
+        ttk.Label(tol_row, text="Tolerancia:").pack(side=tk.LEFT)
+        self.tolerance = tk.IntVar(value=10)
+        ttk.Scale(tol_row, from_=0, to=50, variable=self.tolerance, orient=tk.HORIZONTAL,
+                 command=lambda v: self.update_region_preview()).pack(side=tk.LEFT, fill=tk.X, expand=True)
         
-    def get_original_canvas(self):
-        """Retorna el canvas original para el eyedropper."""
-        return self.original_canvas
+        self.excluded_colors = [None, None]
         
-    def create_preview_panel(self, parent):
-        """Crea el panel de vista previa con canvases con zoom."""
-        self.notebook = ttk.Notebook(parent)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
+        # Visualización
+        viz_frame = ttk.Frame(left)
+        viz_frame.pack(fill=tk.X, padx=5, pady=3)
         
-        # Pestaña 1: Original con Grid
-        self.original_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.original_tab, text="📷 Original + Grid")
+        self.show_grid = tk.BooleanVar(value=True)
+        ttk.Checkbutton(viz_frame, text="Grid", variable=self.show_grid,
+                       command=self.update_region_preview).pack(side=tk.LEFT)
+        self.show_centers = tk.BooleanVar(value=True)
+        ttk.Checkbutton(viz_frame, text="Centros", variable=self.show_centers,
+                       command=self.update_region_preview).pack(side=tk.LEFT)
         
-        self.original_canvas = ZoomableCanvas(self.original_tab, bg='#0f0f23', highlightthickness=0)
-        self.original_canvas.pack(fill=tk.BOTH, expand=True)
+        ttk.Separator(left, orient='horizontal').pack(fill=tk.X, pady=5)
         
-        # Pestaña 2: Resultado
-        self.result_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.result_tab, text="✨ Resultado")
+        # Navegación principal
+        nav_frame = ttk.Frame(left)
+        nav_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        self.result_canvas = ZoomableCanvas(self.result_tab, bg='#0f0f23', highlightthickness=0)
-        self.result_canvas.pack(fill=tk.BOTH, expand=True)
+        ttk.Button(nav_frame, text="← Regiones", command=lambda: self.show_step(2)).pack(side=tk.LEFT)
+        self.step3_next = ttk.Button(nav_frame, text="Generar →", command=self.generate_all,
+                                     style='Accent.TButton')
+        self.step3_next.pack(side=tk.RIGHT)
         
-        # Pestaña 3: Comparación
-        self.compare_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.compare_tab, text="🔄 Comparar")
+        # Canvas
+        self.editor_canvas = RegionEditorCanvas(self.step3_frame, bg='#0f0f23', highlightthickness=0)
+        self.editor_canvas.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
         
-        compare_frame = ttk.Frame(self.compare_tab)
-        compare_frame.pack(fill=tk.BOTH, expand=True)
+    def create_step4(self):
+        """Paso 4: Resultado final"""
+        # Panel izquierdo
+        left = ttk.Frame(self.step4_frame, width=200)
+        left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
+        left.pack_propagate(False)
         
-        self.compare_left = ZoomableCanvas(compare_frame, bg='#0f0f23', highlightthickness=0)
-        self.compare_left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        ttk.Label(left, text="✅ Completado", style='Title.TLabel').pack(pady=10)
         
-        self.compare_right = ZoomableCanvas(compare_frame, bg='#0f0f23', highlightthickness=0)
-        self.compare_right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        self.result_info = ttk.Label(left, text="", style='Info.TLabel', wraplength=180)
+        self.result_info.pack(pady=5)
+        
+        ttk.Button(left, text="💾 Guardar Todo", command=self.save_all_results,
+                  style='Accent.TButton').pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Button(left, text="💾 Guardar Seleccionado", command=self.save_selected).pack(fill=tk.X, padx=5)
+        
+        ttk.Separator(left, orient='horizontal').pack(fill=tk.X, pady=10)
+        
+        self.result_list = tk.Listbox(left, bg='#16213e', fg='#eaeaea', height=10,
+                                      selectbackground='#e94560')
+        self.result_list.pack(fill=tk.BOTH, expand=True, padx=5)
+        self.result_list.bind('<<ListboxSelect>>', self.on_result_select)
+        
+        ttk.Separator(left, orient='horizontal').pack(fill=tk.X, pady=10)
+        
+        ttk.Button(left, text="← Editar regiones", command=lambda: self.show_step(3)).pack(fill=tk.X, padx=5)
+        ttk.Button(left, text="🔄 Nueva imagen", command=lambda: self.show_step(1)).pack(fill=tk.X, padx=5, pady=5)
+        
+        # Canvas resultado
+        self.result_canvas = RegionEditorCanvas(self.step4_frame, bg='#0f0f23', highlightthickness=0)
+        self.result_canvas.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        
+    def show_step(self, step):
+        """Muestra el paso indicado."""
+        for frame in [self.step1_frame, self.step2_frame, self.step3_frame, self.step4_frame]:
+            frame.pack_forget()
+            
+        steps = {
+            1: (self.step1_frame, "Paso 1: Cargar imagen"),
+            2: (self.step2_frame, "Paso 2: Seleccionar regiones"),
+            3: (self.step3_frame, "Paso 3: Configurar regiones"),
+            4: (self.step4_frame, "Paso 4: Resultado"),
+        }
+        
+        frame, label = steps[step]
+        frame.pack(fill=tk.BOTH, expand=True)
+        self.step_label.config(text=label)
         
     def load_image(self):
-        """Carga una imagen desde el sistema de archivos."""
-        filetypes = [
-            ("Imágenes", "*.png *.jpg *.jpeg *.gif *.bmp *.webp"),
-            ("PNG", "*.png"),
-            ("JPEG", "*.jpg *.jpeg"),
-            ("Todos los archivos", "*.*")
-        ]
-        
-        filepath = filedialog.askopenfilename(
-            title="Seleccionar imagen de pixel art",
-            filetypes=filetypes
-        )
+        filetypes = [("Imágenes", "*.png *.jpg *.jpeg *.gif *.bmp *.webp"), ("Todos", "*.*")]
+        filepath = filedialog.askopenfilename(title="Seleccionar imagen", filetypes=filetypes)
         
         if filepath:
             try:
                 self.original_path = Path(filepath)
                 self.original_image = Image.open(filepath)
-                
-                if self.original_image.mode == 'P':
+                if self.original_image.mode != 'RGBA':
                     self.original_image = self.original_image.convert('RGBA')
-                elif self.original_image.mode != 'RGBA':
-                    self.original_image = self.original_image.convert('RGBA')
+                    
+                self.load_info.config(text=f"✅ {self.original_path.name}\n{self.original_image.size[0]}×{self.original_image.size[1]}")
                 
-                self.file_label.config(text=self.original_path.name)
-                self.size_label.config(text=f"Dimensiones: {self.original_image.size[0]}×{self.original_image.size[1]}")
+                # Preparar paso 2
+                self.region_canvas.set_image(self.original_image)
+                self.regions = []
+                self.results = {}
                 
-                # Reset
-                self.color_exclusion.clear_colors()
-                self.grid_offset_x.set(0)
-                self.grid_offset_y.set(0)
-                
-                self.detect_grid_size()
-                self.transform_btn.state(['!disabled'])
-                self.update_preview()
+                self.show_step(2)
                 
             except Exception as e:
-                messagebox.showerror("Error", f"No se pudo cargar la imagen:\n{e}")
+                messagebox.showerror("Error", str(e))
                 
-    def detect_grid_size(self):
-        """Detecta automáticamente el tamaño del grid."""
-        if self.original_image is None:
+    def on_region_added(self, idx, coords):
+        """Callback cuando se añade una región."""
+        self.regions.append({
+            'coords': coords,
+            'grid_size': 16,
+            'auto_detect': True,
+            'offset_x': 0,
+            'offset_y': 0,
+            'bits': 8,
+            'excluded_colors': [None, None],
+            'tolerance': 10,
+        })
+        self.update_regions_list()
+        
+    def update_regions_list(self):
+        self.regions_list.delete(0, tk.END)
+        for i, region in enumerate(self.regions):
+            x1, y1, x2, y2 = region['coords']
+            self.regions_list.insert(tk.END, f"Región {i+1}: {x2-x1}×{y2-y1}")
+            
+    def remove_selected_region(self):
+        sel = self.regions_list.curselection()
+        if sel:
+            idx = sel[0]
+            del self.regions[idx]
+            self.region_canvas.remove_region(idx)
+            self.update_regions_list()
+            
+    def clear_all_regions(self):
+        self.regions = []
+        self.region_canvas.clear_regions()
+        self.update_regions_list()
+        
+    def go_to_step3(self):
+        if not self.regions:
+            messagebox.showwarning("Aviso", "Selecciona al menos una región")
+            return
+        self.current_region_idx = 0
+        self.load_current_region()
+        self.show_step(3)
+        
+    def load_current_region(self):
+        """Carga la región actual en el editor."""
+        if not self.regions:
             return
             
-        img_array = np.array(self.original_image.convert('RGB'))
-        width, height = self.original_image.size
+        region = self.regions[self.current_region_idx]
+        x1, y1, x2, y2 = region['coords']
         
-        common_sizes = [64, 48, 32, 24, 16, 12, 10, 8, 6, 5, 4, 3, 2]
-        all_sizes = [s for s in range(128, 1, -1) if width % s == 0 and height % s == 0]
+        # Extraer subimagen
+        self.current_region_image = self.original_image.crop((x1, y1, x2, y2))
         
-        sizes_to_check = [s for s in common_sizes if s in all_sizes]
-        sizes_to_check.extend([s for s in all_sizes if s not in sizes_to_check])
+        # Cargar configuración
+        self.auto_detect.set(region['auto_detect'])
+        self.grid_size.set(region['grid_size'])
+        self.offset_x.set(region['offset_x'])
+        self.offset_y.set(region['offset_y'])
+        self.bits.set(region['bits'])
+        self.tolerance.set(region['tolerance'])
+        self.excluded_colors = region['excluded_colors'].copy()
         
-        detected = 1
+        # Actualizar visual de colores
+        for i, color in enumerate(self.excluded_colors):
+            frame = self.exc_color1 if i == 0 else self.exc_color2
+            if color:
+                frame.config(bg='#{:02x}{:02x}{:02x}'.format(*color))
+            else:
+                frame.config(bg='#333')
         
-        for size in sizes_to_check:
+        # Auto-detectar grid si es necesario
+        if region['auto_detect']:
+            detected = self.detect_grid_size(self.current_region_image)
+            self.grid_size.set(detected)
+        
+        self.update_region_indicator()
+        self.update_region_preview()
+        
+    def save_current_region_config(self):
+        """Guarda la configuración actual de la región."""
+        if not self.regions:
+            return
+        self.regions[self.current_region_idx].update({
+            'auto_detect': self.auto_detect.get(),
+            'grid_size': self.grid_size.get(),
+            'offset_x': self.offset_x.get(),
+            'offset_y': self.offset_y.get(),
+            'bits': self.bits.get(),
+            'excluded_colors': self.excluded_colors.copy(),
+            'tolerance': self.tolerance.get(),
+        })
+        
+    def update_region_indicator(self):
+        self.region_indicator.config(text=f"Región {self.current_region_idx + 1}/{len(self.regions)}")
+        self.prev_region_btn.state(['!disabled'] if self.current_region_idx > 0 else ['disabled'])
+        self.next_region_btn.state(['!disabled'] if self.current_region_idx < len(self.regions) - 1 else ['disabled'])
+        
+    def prev_region(self):
+        self.save_current_region_config()
+        if self.current_region_idx > 0:
+            self.current_region_idx -= 1
+            self.load_current_region()
+            
+    def next_region(self):
+        self.save_current_region_config()
+        if self.current_region_idx < len(self.regions) - 1:
+            self.current_region_idx += 1
+            self.load_current_region()
+            
+    def pick_exclude_color(self, idx):
+        """Activa eyedropper para elegir color a excluir."""
+        self.editor_canvas.enable_eyedropper(lambda c: self.set_exclude_color(idx, c))
+        
+    def set_exclude_color(self, idx, color):
+        self.excluded_colors[idx] = color
+        frame = self.exc_color1 if idx == 0 else self.exc_color2
+        frame.config(bg='#{:02x}{:02x}{:02x}'.format(*color))
+        self.update_region_preview()
+        
+    def clear_exclude_colors(self):
+        self.excluded_colors = [None, None]
+        self.exc_color1.config(bg='#333')
+        self.exc_color2.config(bg='#333')
+        self.update_region_preview()
+        
+    def detect_grid_size(self, image):
+        """Detecta el tamaño del grid."""
+        img_array = np.array(image.convert('RGB'))
+        width, height = image.size
+        
+        for size in [64, 48, 32, 24, 16, 12, 10, 8, 6, 5, 4, 3, 2]:
+            if width % size != 0 or height % size != 0:
+                continue
             blocks_x = width // size
             blocks_y = height // size
-            max_samples = min(100, blocks_x * blocks_y)
-            step = max(1, (blocks_x * blocks_y) // max_samples)
-            
-            uniform_count = 0
-            sample_count = 0
-            
-            for i in range(0, blocks_x * blocks_y, step):
+            uniform = 0
+            total = 0
+            for i in range(min(50, blocks_x * blocks_y)):
                 bx = (i % blocks_x) * size
                 by = (i // blocks_x) * size
-                
                 block = img_array[by:by+size, bx:bx+size]
-                first_pixel = block[0, 0]
-                
-                if np.all(block == first_pixel):
-                    uniform_count += 1
-                sample_count += 1
-            
-            if sample_count > 0 and uniform_count / sample_count >= 0.95:
-                detected = size
-                break
+                if np.all(block == block[0, 0]):
+                    uniform += 1
+                total += 1
+            if total > 0 and uniform / total >= 0.9:
+                return size
+        return 16
         
-        self.detected_size.set(detected)
-        result_w = width // detected
-        result_h = height // detected
-        self.auto_result_label.config(text=f"Detectado: {detected}×{detected} → {result_w}×{result_h} px")
-        
-    def on_grid_mode_change(self):
-        """Callback cuando cambia el modo de grid."""
-        self.update_preview()
-        
-    def on_slider_change(self, value):
-        """Callback cuando cambia el slider."""
-        size = int(float(value))
-        self.size_value_label.config(text=f"{size}×{size}")
-        if not self.use_auto_detect.get():
-            self.update_preview()
-            
-    def on_offset_change(self):
-        """Callback cuando cambia el offset del grid."""
-        self.update_preview()
-        
-    def reset_offset(self):
-        """Resetea el offset a 0,0."""
-        self.grid_offset_x.set(0)
-        self.grid_offset_y.set(0)
-        self.update_preview()
-            
-    def get_current_grid_size(self):
-        """Obtiene el tamaño de grid actual."""
-        if self.use_auto_detect.get():
-            return self.detected_size.get()
-        return self.manual_size.get()
-        
-    def reset_zoom(self):
-        """Resetea el zoom de todos los canvas."""
-        self.original_canvas.reset_view()
-        self.original_canvas.redraw()
-        self.result_canvas.reset_view()
-        self.result_canvas.redraw()
-        self.compare_left.reset_view()
-        self.compare_left.redraw()
-        self.compare_right.reset_view()
-        self.compare_right.redraw()
-        
-    def update_preview(self):
-        """Actualiza la vista previa."""
-        if self.original_image is None:
+    def update_region_preview(self):
+        """Actualiza la preview de la región actual."""
+        if not hasattr(self, 'current_region_image') or self.current_region_image is None:
             return
             
-        cell_size = self.get_current_grid_size()
-        if cell_size < 2:
-            return
-            
-        offset_x = self.grid_offset_x.get()
-        offset_y = self.grid_offset_y.get()
-            
-        if self.show_grid_overlay.get():
-            preview_img = self.create_grid_visualization(
-                self.original_image, cell_size,
-                self.show_center_markers.get(),
-                offset_x, offset_y
-            )
-        else:
-            preview_img = self.original_image.copy()
-            
-        self.preview_image = preview_img
-        self.original_canvas.set_image(preview_img, self.original_image)
+        cell_size = self.grid_size.get()
+        offset_x = self.offset_x.get()
+        offset_y = self.offset_y.get()
         
-    def create_grid_visualization(self, image, cell_size, show_centers=True, offset_x=0, offset_y=0):
-        """Crea visualización del grid con offset."""
+        image = self.current_region_image.copy()
+        
+        if self.show_grid.get() or self.show_centers.get():
+            image = self.draw_grid_overlay(image, cell_size, offset_x, offset_y)
+        
+        self.editor_canvas.set_image(image)
+        
+    def reduce_color(self, color, bits):
+        if bits >= 8:
+            return color
+        levels = 2 ** bits
+        factor = 256 // levels
+        return tuple(min(255, (c // factor) * factor + factor // 2) for c in color[:3])
+        
+    def colors_similar(self, c1, c2, tol):
+        return all(abs(a - b) <= tol for a, b in zip(c1, c2))
+        
+    def draw_grid_overlay(self, image, cell_size, offset_x, offset_y):
         if image.mode != 'RGBA':
-            viz_image = image.convert('RGBA')
+            viz = image.convert('RGBA')
         else:
-            viz_image = image.copy()
-        
-        overlay = Image.new('RGBA', viz_image.size, (0, 0, 0, 0))
+            viz = image.copy()
+            
+        overlay = Image.new('RGBA', viz.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
         
         width, height = image.size
-        grid_color = (255, 50, 80, 150)
         
-        # Líneas verticales con offset
-        for x in range(offset_x, width + 1, cell_size):
-            if x >= 0:
-                draw.line([(x, 0), (x, height)], fill=grid_color, width=1)
+        if self.show_grid.get():
+            grid_color = (255, 50, 80, 150)
+            for x in range(offset_x, width + 1, cell_size):
+                if x >= 0:
+                    draw.line([(x, 0), (x, height)], fill=grid_color, width=1)
+            for y in range(offset_y, height + 1, cell_size):
+                if y >= 0:
+                    draw.line([(0, y), (width, y)], fill=grid_color, width=1)
         
-        # Líneas horizontales con offset
-        for y in range(offset_y, height + 1, cell_size):
-            if y >= 0:
-                draw.line([(0, y), (width, y)], fill=grid_color, width=1)
-        
-        excluded = self.color_exclusion.get_excluded_colors()
-        
-        if show_centers:
+        if self.show_centers.get():
+            bits = self.bits.get()
+            tol = self.tolerance.get()
             marker_size = max(1, cell_size // 8)
-            
-            # Calcular cuántos bloques hay considerando el offset
             start_x = offset_x if offset_x >= 0 else offset_x % cell_size
             start_y = offset_y if offset_y >= 0 else offset_y % cell_size
             
@@ -812,164 +830,129 @@ class PixelArtTransformerGUI:
                     cx = x + cell_size // 2
                     cy = y + cell_size // 2
                     if 0 <= cx < width and 0 <= cy < height:
-                        pixel_color = image.getpixel((cx, cy))[:3]
+                        pixel = image.getpixel((cx, cy))[:3]
+                        reduced = self.reduce_color(pixel, bits)
                         
-                        is_excluded = any(
-                            self.colors_similar(pixel_color, exc, tolerance=10)
-                            for exc in excluded
+                        excluded = any(
+                            self.colors_similar(reduced, exc, tol)
+                            for exc in self.excluded_colors if exc
                         )
                         
-                        if is_excluded:
-                            center_color = (255, 100, 100, 200)
-                            draw.line([(cx - marker_size, cy - marker_size),
-                                      (cx + marker_size, cy + marker_size)], 
-                                     fill=center_color, width=2)
-                            draw.line([(cx + marker_size, cy - marker_size),
-                                      (cx - marker_size, cy + marker_size)], 
-                                     fill=center_color, width=2)
+                        if excluded:
+                            draw.line([(cx-marker_size, cy-marker_size), (cx+marker_size, cy+marker_size)],
+                                     fill=(255, 100, 100, 200), width=2)
+                            draw.line([(cx+marker_size, cy-marker_size), (cx-marker_size, cy+marker_size)],
+                                     fill=(255, 100, 100, 200), width=2)
                         else:
-                            center_color = (50, 255, 100, 200)
-                            draw.ellipse(
-                                [(cx - marker_size, cy - marker_size),
-                                 (cx + marker_size, cy + marker_size)],
-                                fill=center_color
-                            )
+                            draw.ellipse([(cx-marker_size, cy-marker_size), (cx+marker_size, cy+marker_size)],
+                                        fill=(50, 255, 100, 200))
         
-        return Image.alpha_composite(viz_image, overlay)
+        return Image.alpha_composite(viz, overlay)
         
-    def colors_similar(self, c1, c2, tolerance=10):
-        """Compara si dos colores son similares."""
-        return all(abs(a - b) <= tolerance for a, b in zip(c1, c2))
+    def generate_all(self):
+        """Genera todas las regiones."""
+        self.save_current_region_config()
+        self.results = {}
         
-    def transform_image(self):
-        """Transforma la imagen a pixel art real."""
-        if self.original_image is None:
-            return
+        for idx, region in enumerate(self.regions):
+            x1, y1, x2, y2 = region['coords']
+            img = self.original_image.crop((x1, y1, x2, y2))
             
-        cell_size = self.get_current_grid_size()
-        if cell_size < 2:
-            messagebox.showwarning("Aviso", "El tamaño de grid debe ser al menos 2")
-            return
+            cell_size = region['grid_size']
+            offset_x = region['offset_x']
+            offset_y = region['offset_y']
+            bits = region['bits']
+            excluded = [c for c in region['excluded_colors'] if c]
+            tol = region['tolerance']
             
-        width, height = self.original_image.size
-        offset_x = self.grid_offset_x.get()
-        offset_y = self.grid_offset_y.get()
-        
-        # Calcular dimensiones considerando offset
-        start_x = offset_x if offset_x >= 0 else offset_x % cell_size
-        start_y = offset_y if offset_y >= 0 else offset_y % cell_size
-        
-        new_w = (width - start_x) // cell_size
-        new_h = (height - start_y) // cell_size
-        
-        if new_w < 1 or new_h < 1:
-            messagebox.showwarning("Aviso", "El offset es demasiado grande para el tamaño de imagen")
-            return
-        
-        excluded = self.color_exclusion.get_excluded_colors()
-        
-        self.result_image = Image.new('RGBA', (new_w, new_h), (0, 0, 0, 0))
-        
-        excluded_count = 0
-        
-        for y in range(new_h):
-            for x in range(new_w):
-                orig_x = start_x + x * cell_size
-                orig_y = start_y + y * cell_size
-                
-                cx = orig_x + cell_size // 2
-                cy = orig_y + cell_size // 2
-                cx = min(cx, width - 1)
-                cy = min(cy, height - 1)
-                
-                color = self.original_image.getpixel((cx, cy))
-                if len(color) == 3:
-                    color = color + (255,)
-                
-                rgb = color[:3]
-                
-                is_excluded = any(
-                    self.colors_similar(rgb, exc, tolerance=10)
-                    for exc in excluded
-                )
-                
-                if is_excluded:
-                    self.result_image.putpixel((x, y), (0, 0, 0, 0))
-                    excluded_count += 1
-                else:
-                    self.result_image.putpixel((x, y), color)
-        
-        self.grid_image = self.create_grid_visualization(
-            self.original_image, cell_size, True, offset_x, offset_y
-        )
-        
-        self.result_canvas.set_image(self.result_image)
-        self.compare_left.set_image(self.original_image)
-        self.compare_right.set_image(self.result_image)
-        
-        total_pixels = new_w * new_h
-        excluded_text = f"\nPixels excluidos: {excluded_count}" if excluded_count > 0 else ""
-        offset_text = f"\nOffset: ({offset_x}, {offset_y})" if (offset_x != 0 or offset_y != 0) else ""
-        
-        self.result_info.config(
-            text=f"✅ Transformación completada\n"
-                 f"Original: {width}×{height}\n"
-                 f"Resultado: {new_w}×{new_h}\n"
-                 f"Factor: {cell_size}×{offset_text}{excluded_text}"
-        )
-        
-        self.save_btn.state(['!disabled'])
-        self.save_grid_btn.state(['!disabled'])
-        self.notebook.select(1)
-        
-    def save_result(self):
-        """Guarda la imagen resultado."""
-        if self.result_image is None:
-            return
+            start_x = offset_x if offset_x >= 0 else offset_x % cell_size
+            start_y = offset_y if offset_y >= 0 else offset_y % cell_size
             
-        default_name = f"{self.original_path.stem}_real.png" if self.original_path else "result.png"
+            new_w = (img.size[0] - start_x) // cell_size
+            new_h = (img.size[1] - start_y) // cell_size
+            
+            if new_w < 1 or new_h < 1:
+                continue
+                
+            result = Image.new('RGBA', (new_w, new_h), (0, 0, 0, 0))
+            
+            for py in range(new_h):
+                for px in range(new_w):
+                    cx = start_x + px * cell_size + cell_size // 2
+                    cy = start_y + py * cell_size + cell_size // 2
+                    cx = min(cx, img.size[0] - 1)
+                    cy = min(cy, img.size[1] - 1)
+                    
+                    color = img.getpixel((cx, cy))
+                    if len(color) == 3:
+                        color = color + (255,)
+                        
+                    rgb = self.reduce_color(color[:3], bits)
+                    
+                    is_excluded = any(self.colors_similar(rgb, exc, tol) for exc in excluded)
+                    
+                    if is_excluded:
+                        result.putpixel((px, py), (0, 0, 0, 0))
+                    else:
+                        result.putpixel((px, py), rgb + (color[3],))
+            
+            self.results[idx] = result
         
+        # Mostrar resultados
+        self.result_list.delete(0, tk.END)
+        for idx in self.results:
+            r = self.results[idx]
+            self.result_list.insert(tk.END, f"Región {idx+1}: {r.size[0]}×{r.size[1]}")
+            
+        self.result_info.config(text=f"✅ {len(self.results)} regiones generadas")
+        
+        if self.results:
+            self.result_list.selection_set(0)
+            self.result_canvas.set_image(self.results[0])
+            
+        self.show_step(4)
+        
+    def on_result_select(self, event):
+        sel = self.result_list.curselection()
+        if sel:
+            idx = sel[0]
+            if idx in self.results:
+                self.result_canvas.set_image(self.results[idx])
+                
+    def save_all_results(self):
+        if not self.results:
+            return
+        folder = filedialog.askdirectory(title="Seleccionar carpeta")
+        if folder:
+            for idx, img in self.results.items():
+                name = f"{self.original_path.stem}_region{idx+1}.png"
+                img.save(Path(folder) / name, 'PNG')
+            messagebox.showinfo("Guardado", f"{len(self.results)} imágenes guardadas en:\n{folder}")
+            
+    def save_selected(self):
+        sel = self.result_list.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if idx not in self.results:
+            return
+        default_name = f"{self.original_path.stem}_region{idx+1}.png"
         filepath = filedialog.asksaveasfilename(
-            title="Guardar imagen resultado",
-            defaultextension=".png",
-            initialfile=default_name,
-            filetypes=[("PNG", "*.png"), ("Todos", "*.*")]
+            title="Guardar", defaultextension=".png",
+            initialfile=default_name, filetypes=[("PNG", "*.png")]
         )
-        
         if filepath:
-            self.result_image.save(filepath, 'PNG')
+            self.results[idx].save(filepath, 'PNG')
             messagebox.showinfo("Guardado", f"Imagen guardada:\n{filepath}")
-            
-    def save_grid(self):
-        """Guarda la visualización del grid."""
-        if self.grid_image is None:
-            return
-            
-        default_name = f"{self.original_path.stem}_grid.png" if self.original_path else "grid.png"
-        
-        filepath = filedialog.asksaveasfilename(
-            title="Guardar visualización del grid",
-            defaultextension=".png",
-            initialfile=default_name,
-            filetypes=[("PNG", "*.png"), ("Todos", "*.*")]
-        )
-        
-        if filepath:
-            self.grid_image.save(filepath, 'PNG')
-            messagebox.showinfo("Guardado", f"Grid guardado:\n{filepath}")
 
 
 def main():
     root = tk.Tk()
     app = PixelArtTransformerGUI(root)
-    
     root.update_idletasks()
-    w = root.winfo_width()
-    h = root.winfo_height()
-    x = (root.winfo_screenwidth() // 2) - (w // 2)
-    y = (root.winfo_screenheight() // 2) - (h // 2)
+    x = (root.winfo_screenwidth() // 2) - (root.winfo_width() // 2)
+    y = (root.winfo_screenheight() // 2) - (root.winfo_height() // 2)
     root.geometry(f'+{x}+{y}')
-    
     root.mainloop()
 
 
