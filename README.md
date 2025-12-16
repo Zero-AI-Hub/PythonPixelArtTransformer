@@ -169,15 +169,22 @@ All settings are centralized in `config.py`:
 | `WINDOW` | Window dimensions |
 | `FILE` | Supported formats and suffixes |
 
-## 🖼️ Example
+## 🖼️ Example Results
 
-```
-Input (128×128)     →     Output (8×8)
-┌────────────────┐       ┌────────┐
-│ Upscaled 16×   │ ───▶  │ True   │
-│ pixel art      │       │ pixels │
-└────────────────┘       └────────┘
-```
+<p align="center">
+  <img src="examples/mask_original_thumb.png" alt="Original" width="200">
+  &nbsp;&nbsp;&nbsp;➡️&nbsp;&nbsp;&nbsp;
+  <img src="examples/mask_pixel_64x64.png" alt="Pixel Art Result" width="128">
+</p>
+
+<p align="center">
+  <em>Original Image (1024×1024)</em> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <em>Pixel Art (30×30 → 64×64)</em>
+</p>
+
+The tool automatically:
+1. Detects optimal grid size based on image dimensions
+2. Samples center color of each cell
+3. Exports to standard pixel art sizes (8×8, 16×16, 32×32, 64×64, etc.)
 
 ## 🤝 Contributing
 
