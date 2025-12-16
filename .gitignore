@@ -39,3 +39,24 @@ test_heart_grid.png
 # OS
 .DS_Store
 Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Logs
+*.log
+logs/
+
+# Generated outputs
+*_real.png
+*_grid.png
+*_region*.png
