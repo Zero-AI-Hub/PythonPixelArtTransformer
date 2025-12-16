@@ -33,6 +33,7 @@ class EditorMode(Enum):
     PAN_ZOOM = "pan_zoom"
     ADJUST_GRID = "adjust_grid"
     SELECT_CELLS = "select_cells"
+    AREA_SELECT = "area_select"
 
 
 class DragTarget(Enum):
@@ -212,6 +213,12 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
         self._eyedropper_mode = False
         self._eyedropper_callback: Callable[[tuple[int, int, int]], None] | None = None
         
+        # Area selection state
+        self._area_selecting = False
+        self._area_start: tuple[int, int] | None = None  # Image coordinates
+        self._area_end: tuple[int, int] | None = None    # Image coordinates
+        self._area_rect_id: int | None = None
+        
         # Rebind events
         self.bind('<Motion>', self._on_motion)
         self.bind('<ButtonPress-1>', self._on_press)
@@ -315,12 +322,89 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
         if self.on_grid_changed:
             self.on_grid_changed(self.grid_config)
     
+    def get_cells_in_area(self) -> list[tuple[int, int]]:
+        """
+        Get all cells that are within the current area selection.
+        
+        Returns:
+            List of (col, row) tuples for cells in the selection.
+        """
+        if self._area_start is None or self._area_end is None:
+            return []
+        
+        # Get the selection bounds in image coordinates
+        x1 = min(self._area_start[0], self._area_end[0])
+        y1 = min(self._area_start[1], self._area_end[1])
+        x2 = max(self._area_start[0], self._area_end[0])
+        y2 = max(self._area_start[1], self._area_end[1])
+        
+        cells = []
+        for col in range(self.grid_config.num_cols):
+            for row in range(self.grid_config.num_rows):
+                cx, cy = self.grid_config.get_cell_center(col, row)
+                if x1 <= cx <= x2 and y1 <= cy <= y2:
+                    cells.append((col, row))
+        
+        return cells
+    
+    def include_cells_in_selection(self) -> int:
+        """
+        Include (un-exclude) all cells in the current area selection.
+        
+        Returns:
+            Number of cells that were changed.
+        """
+        cells = self.get_cells_in_area()
+        changed = 0
+        for col, row in cells:
+            if (col, row) in self.grid_config.excluded_cells:
+                self.grid_config.excluded_cells.remove((col, row))
+                changed += 1
+        
+        if changed:
+            self._notify_change()
+            self.redraw()
+        return changed
+    
+    def exclude_cells_in_selection(self) -> int:
+        """
+        Exclude all cells in the current area selection.
+        
+        Returns:
+            Number of cells that were changed.
+        """
+        cells = self.get_cells_in_area()
+        changed = 0
+        for col, row in cells:
+            if (col, row) not in self.grid_config.excluded_cells:
+                self.grid_config.excluded_cells.add((col, row))
+                self.grid_config.included_cells.discard((col, row))
+                changed += 1
+        
+        if changed:
+            self._notify_change()
+            self.redraw()
+        return changed
+    
+    def clear_area_selection(self) -> None:
+        """Clear the current area selection."""
+        self._area_start = None
+        self._area_end = None
+        self._area_selecting = False
+        self.redraw()
+    
+    def has_area_selection(self) -> bool:
+        """Check if there is an active area selection."""
+        return self._area_start is not None and self._area_end is not None
+    
     def _update_cursor(self) -> None:
         """Update cursor based on mode and hover state."""
         if self.mode == EditorMode.PAN_ZOOM:
             self.config(cursor='')
         elif self.mode == EditorMode.SELECT_CELLS:
             self.config(cursor='hand2')
+        elif self.mode == EditorMode.AREA_SELECT:
+            self.config(cursor='cross')
         elif self.mode == EditorMode.ADJUST_GRID:
             if self._hover_line:
                 target, _ = self._hover_line
@@ -360,6 +444,9 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
         
         # Draw cell overlays
         self._draw_cell_overlays()
+        
+        # Draw area selection rectangle
+        self._draw_area_selection()
         
         # Draw info
         self._draw_info_text()
@@ -467,8 +554,11 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
     
     def _draw_cell_overlays(self) -> None:
         """Draw semi-transparent overlays on cells."""
-        if self.mode != EditorMode.SELECT_CELLS:
+        if self.mode not in (EditorMode.SELECT_CELLS, EditorMode.AREA_SELECT):
             return
+        
+        # Get cells in area selection for highlighting
+        cells_in_area = set(self.get_cells_in_area()) if self.mode == EditorMode.AREA_SELECT else set()
         
         for col in range(self.grid_config.num_cols):
             for row in range(self.grid_config.num_rows):
@@ -479,8 +569,8 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
                 sx2 = self.img_x + int(x2 * self.zoom_level)
                 sy2 = self.img_y + int(y2 * self.zoom_level)
                 
-                # Hover highlight
-                if self._hover_cell == (col, row):
+                # Hover highlight (SELECT_CELLS mode)
+                if self._hover_cell == (col, row) and self.mode == EditorMode.SELECT_CELLS:
                     self.create_rectangle(
                         sx1, sy1, sx2, sy2,
                         fill='#ffff00', 
@@ -488,6 +578,17 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
                         outline='#ffff00',
                         width=2,
                         tags='cell_hover'
+                    )
+                
+                # Area selection highlight (AREA_SELECT mode)
+                if (col, row) in cells_in_area:
+                    self.create_rectangle(
+                        sx1, sy1, sx2, sy2,
+                        fill='#00aaff', 
+                        stipple='gray50',
+                        outline='#00aaff',
+                        width=1,
+                        tags='cell_area'
                     )
                 
                 # Exclusion overlay
@@ -500,22 +601,52 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
                         tags='cell_excluded'
                     )
     
+    def _draw_area_selection(self) -> None:
+        """Draw the area selection rectangle."""
+        if self.mode != EditorMode.AREA_SELECT:
+            return
+        
+        if self._area_start is None or self._area_end is None:
+            return
+        
+        # Convert image coordinates to screen coordinates
+        sx1 = self.img_x + int(self._area_start[0] * self.zoom_level)
+        sy1 = self.img_y + int(self._area_start[1] * self.zoom_level)
+        sx2 = self.img_x + int(self._area_end[0] * self.zoom_level)
+        sy2 = self.img_y + int(self._area_end[1] * self.zoom_level)
+        
+        # Draw selection rectangle
+        self.create_rectangle(
+            sx1, sy1, sx2, sy2,
+            outline='#00ff88',
+            width=2,
+            dash=(4, 4),
+            tags='area_selection'
+        )
+    
     def _draw_info_text(self) -> None:
         """Draw info text."""
         zoom_pct = int(self.zoom_level * 100)
         mode_text = {
             EditorMode.PAN_ZOOM: "🔍 Pan/Zoom",
             EditorMode.ADJUST_GRID: "📏 Ajustar Grid",
-            EditorMode.SELECT_CELLS: "✋ Seleccionar"
+            EditorMode.SELECT_CELLS: "✋ Seleccionar",
+            EditorMode.AREA_SELECT: "🔲 Área"
         }.get(self.mode, "")
         
         cols = self.grid_config.num_cols
         rows = self.grid_config.num_rows
         excluded = len(self.grid_config.excluded_cells)
         
+        # Add area selection info
+        area_info = ""
+        if self.mode == EditorMode.AREA_SELECT and self.has_area_selection():
+            cells_in_area = len(self.get_cells_in_area())
+            area_info = f" | Selección: {cells_in_area}"
+        
         info_lines = [
             f"Zoom: {zoom_pct}% | {mode_text}",
-            f"Grid: {cols}×{rows} | Excluidas: {excluded}"
+            f"Grid: {cols}×{rows} | Excluidas: {excluded}{area_info}"
         ]
         
         for i, line in enumerate(info_lines):
@@ -648,6 +779,14 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
                 self.grid_config.toggle_cell(cell[0], cell[1])
                 self._notify_change()
                 self.redraw()
+        
+        elif self.mode == EditorMode.AREA_SELECT:
+            # Start area selection
+            ix, iy = self.screen_to_image(event.x, event.y)
+            self._area_selecting = True
+            self._area_start = (ix, iy)
+            self._area_end = (ix, iy)
+            self.redraw()
     
     def _on_drag(self, event: tk.Event) -> None:
         """Handle mouse drag."""
@@ -672,6 +811,12 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
                     self.grid_config.excluded_cells.add(cell)
                     self._notify_change()
                     self.redraw()
+        
+        elif self.mode == EditorMode.AREA_SELECT and self._area_selecting:
+            # Update area selection end point
+            ix, iy = self.screen_to_image(event.x, event.y)
+            self._area_end = (ix, iy)
+            self.redraw()
     
     def _handle_grid_drag(self, event: tk.Event) -> None:
         """Handle dragging grid lines."""
@@ -731,6 +876,13 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
         if self._drag_target != DragTarget.NONE:
             self._drag_target = DragTarget.NONE
             self._notify_change()
+        
+        if self._area_selecting:
+            # Finalize area selection (keep it visible)
+            ix, iy = self.screen_to_image(event.x, event.y)
+            self._area_end = (ix, iy)
+            self._area_selecting = False
+            self.redraw()
         
         self._update_cursor()
     

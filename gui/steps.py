@@ -379,6 +379,7 @@ class Step3Frame(ttk.Frame):
             ("🔍 Pan/Zoom", "pan_zoom"),
             ("📏 Ajustar Grid", "adjust_grid"),
             ("✋ Seleccionar", "select_cells"),
+            ("🔲 Área", "area_select"),
         ]
         
         for text, value in modes:
@@ -468,6 +469,28 @@ class Step3Frame(ttk.Frame):
         ttk.Button(
             btn_row1, text="↔ Invertir",
             command=self._invert_selection, width=8
+        ).pack(side=tk.LEFT, padx=1)
+        
+        # ===== AREA SELECTION BUTTONS =====
+        area_label = ttk.Label(sel_frame, text="Selección por área:", style='Info.TLabel')
+        area_label.pack(anchor=tk.W, pady=(5, 2))
+        
+        btn_row2 = ttk.Frame(sel_frame)
+        btn_row2.pack(fill=tk.X)
+        
+        ttk.Button(
+            btn_row2, text="✓ Incluir",
+            command=self._include_area_selection, width=8
+        ).pack(side=tk.LEFT, padx=1)
+        
+        ttk.Button(
+            btn_row2, text="✗ Excluir",
+            command=self._exclude_area_selection, width=8
+        ).pack(side=tk.LEFT, padx=1)
+        
+        ttk.Button(
+            btn_row2, text="⌫ Limpiar",
+            command=self._clear_area_selection, width=8
         ).pack(side=tk.LEFT, padx=1)
         
         self.cell_info = ttk.Label(
@@ -568,6 +591,7 @@ class Step3Frame(ttk.Frame):
             "pan_zoom": "Scroll: zoom | Click derecho: pan",
             "adjust_grid": "Arrastrar líneas del grid para ajustar",
             "select_cells": "Click en celdas para excluir/incluir",
+            "area_select": "Dibuja un área y usa botones para incluir/excluir",
         }
         self.mode_help.config(text=help_texts.get(mode_str, ""))
     
@@ -604,6 +628,26 @@ class Step3Frame(ttk.Frame):
         """Invert cell selection."""
         self.canvas.invert_selection()
         self._update_cell_info()
+    
+    def _include_area_selection(self) -> None:
+        """Include all cells in the area selection."""
+        if not self.canvas.has_area_selection():
+            messagebox.showinfo("Info", "Dibuja primero un área en modo '🔲 Área'")
+            return
+        changed = self.canvas.include_cells_in_selection()
+        self._update_cell_info()
+    
+    def _exclude_area_selection(self) -> None:
+        """Exclude all cells in the area selection."""
+        if not self.canvas.has_area_selection():
+            messagebox.showinfo("Info", "Dibuja primero un área en modo '🔲 Área'")
+            return
+        changed = self.canvas.exclude_cells_in_selection()
+        self._update_cell_info()
+    
+    def _clear_area_selection(self) -> None:
+        """Clear the area selection."""
+        self.canvas.clear_area_selection()
     
     def _on_grid_changed(self, config) -> None:
         """Handle grid configuration change from canvas."""
@@ -669,10 +713,26 @@ class Step3Frame(ttk.Frame):
         if 'grid_config' in region:
             self.canvas.set_grid_config(region['grid_config'])
         else:
-            # Auto-detect and create uniform grid
+            # Calculate a sensible default grid size based on image dimensions
+            img_w, img_h = self.current_region_image.size
+            min_dim = min(img_w, img_h)
+            
+            # Target around 20-40 cells per dimension for good performance
+            # This calculates a grid size that gives approximately 30 cells
+            calculated_size = max(REGION.min_grid_size, min_dim // 30)
+            
+            # Try auto-detect first
             if self.auto_detect.get():
                 detected = detect_pixel_size(self.current_region_image)
-                self.grid_size.set(detected)
+                # Only use detected size if it's reasonable (not 1)
+                if detected > 1:
+                    self.grid_size.set(detected)
+                else:
+                    # Fall back to calculated size
+                    self.grid_size.set(min(calculated_size, REGION.max_grid_size))
+            else:
+                # Use calculated size as default
+                self.grid_size.set(min(calculated_size, REGION.max_grid_size))
             
             self._apply_uniform_grid()
         
@@ -795,7 +855,7 @@ class Step4Frame(ttk.Frame):
     def _create_widgets(self) -> None:
         """Create the UI widgets."""
         # Left panel
-        left = ttk.Frame(self, width=200)
+        left = ttk.Frame(self, width=220)
         left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
         left.pack_propagate(False)
         
@@ -807,9 +867,32 @@ class Step4Frame(ttk.Frame):
         self.result_info = ttk.Label(
             left, text="", 
             style='Info.TLabel', 
-            wraplength=180
+            wraplength=200
         )
         self.result_info.pack(pady=5)
+        
+        # ===== OUTPUT SIZE PRESETS =====
+        size_frame = ttk.LabelFrame(left, text="📐 Tamaño de Salida", padding=5)
+        size_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.output_size = tk.StringVar(value="Original")
+        size_combo = ttk.Combobox(
+            size_frame,
+            textvariable=self.output_size,
+            values=[name for name, _ in FILE.output_size_presets],
+            state='readonly',
+            width=12
+        )
+        size_combo.pack(side=tk.LEFT, padx=2)
+        size_combo.bind('<<ComboboxSelected>>', self._on_size_changed)
+        
+        self.size_info = ttk.Label(
+            size_frame, text="",
+            style='Info.TLabel'
+        )
+        self.size_info.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Separator(left, orient='horizontal').pack(fill=tk.X, pady=5)
         
         ttk.Button(
             left, text="💾 Guardar Todo", 
@@ -854,6 +937,50 @@ class Step4Frame(ttk.Frame):
         )
         self.canvas.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
     
+    def _get_target_size(self) -> int:
+        """Get the target output size from the selected preset."""
+        selected = self.output_size.get()
+        for name, size in FILE.output_size_presets:
+            if name == selected:
+                return size
+        return 0  # Original
+    
+    def _resize_image(self, img: PILImage, target_size: int) -> PILImage:
+        """
+        Resize image to target size while maintaining aspect ratio.
+        
+        For square targets, the image is resized to fit within the target
+        and centered on a transparent canvas.
+        """
+        if target_size == 0:
+            return img
+        
+        orig_w, orig_h = img.size
+        
+        # Calculate scaling to fit within target
+        scale = min(target_size / orig_w, target_size / orig_h)
+        new_w = int(orig_w * scale)
+        new_h = int(orig_h * scale)
+        
+        # Resize with nearest neighbor to preserve pixel art crispness
+        resized = img.resize((new_w, new_h), Image.Resampling.NEAREST)
+        
+        # Create canvas and center the image
+        canvas = Image.new('RGBA', (target_size, target_size), (0, 0, 0, 0))
+        offset_x = (target_size - new_w) // 2
+        offset_y = (target_size - new_h) // 2
+        canvas.paste(resized, (offset_x, offset_y))
+        
+        return canvas
+    
+    def _on_size_changed(self, event: tk.Event = None) -> None:
+        """Handle output size preset change."""
+        target = self._get_target_size()
+        if target == 0:
+            self.size_info.config(text="")
+        else:
+            self.size_info.config(text=f"→ {target}×{target}px")
+    
     def set_results(
         self, 
         results: dict[int, PILImage], 
@@ -890,16 +1017,22 @@ class Step4Frame(ttk.Frame):
         if not self.results or not self.original_path:
             return
         
+        target_size = self._get_target_size()
+        size_suffix = f"_{target_size}x{target_size}" if target_size > 0 else ""
+        
         folder = filedialog.askdirectory(title="Seleccionar carpeta")
         if folder:
             try:
                 for idx, img in self.results.items():
-                    name = f"{self.original_path.stem}{FILE.region_suffix}{idx+1}.png"
-                    img.save(Path(folder) / name, FILE.output_format)
+                    # Resize if needed
+                    output_img = self._resize_image(img, target_size)
+                    name = f"{self.original_path.stem}{FILE.region_suffix}{idx+1}{size_suffix}.png"
+                    output_img.save(Path(folder) / name, FILE.output_format)
                 
+                size_text = f" ({target_size}×{target_size}px)" if target_size > 0 else ""
                 messagebox.showinfo(
                     "Guardado", 
-                    f"{len(self.results)} imágenes guardadas en:\n{folder}"
+                    f"{len(self.results)} imágenes guardadas{size_text} en:\n{folder}"
                 )
             except Exception as e:
                 messagebox.showerror("Error", f"Error al guardar:\n{e}")
@@ -914,7 +1047,10 @@ class Step4Frame(ttk.Frame):
         if idx not in self.results:
             return
         
-        default_name = f"{self.original_path.stem}{FILE.region_suffix}{idx+1}.png"
+        target_size = self._get_target_size()
+        size_suffix = f"_{target_size}x{target_size}" if target_size > 0 else ""
+        
+        default_name = f"{self.original_path.stem}{FILE.region_suffix}{idx+1}{size_suffix}.png"
         filepath = filedialog.asksaveasfilename(
             title="Guardar",
             defaultextension=".png",
@@ -924,7 +1060,11 @@ class Step4Frame(ttk.Frame):
         
         if filepath:
             try:
-                self.results[idx].save(filepath, FILE.output_format)
-                messagebox.showinfo("Guardado", f"Imagen guardada:\n{filepath}")
+                # Resize if needed
+                output_img = self._resize_image(self.results[idx], target_size)
+                output_img.save(filepath, FILE.output_format)
+                
+                size_text = f" ({target_size}×{target_size}px)" if target_size > 0 else ""
+                messagebox.showinfo("Guardado", f"Imagen guardada{size_text}:\n{filepath}")
             except Exception as e:
                 messagebox.showerror("Error", f"Error al guardar:\n{e}")

@@ -96,7 +96,7 @@ GRID_DETECTION = GridDetectionSettings()
 class RegionSettings:
     """Settings for region selection."""
     min_region_size: int = 10  # Minimum pixels for a valid region
-    default_grid_size: int = 16
+    default_grid_size: int = 32
     max_grid_size: int = 64
     min_grid_size: int = 2
     offset_range: Tuple[int, int] = (-32, 32)
@@ -159,6 +159,20 @@ class FileSettings:
     output_suffix: str = "_real"
     grid_suffix: str = "_grid"
     region_suffix: str = "_region"
+    
+    # Standard pixel art size presets (name, size)
+    output_size_presets: Tuple[Tuple[str, int], ...] = (
+        ("Original", 0),  # 0 means keep original size
+        ("8×8", 8),
+        ("16×16", 16),
+        ("24×24", 24),
+        ("32×32", 32),
+        ("48×48", 48),
+        ("64×64", 64),
+        ("96×96", 96),
+        ("128×128", 128),
+        ("256×256", 256),
+    )
 
 
 FILE = FileSettings()
