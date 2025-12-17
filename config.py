@@ -161,8 +161,10 @@ class FileSettings:
     region_suffix: str = "_region"
     
     # Standard pixel art size presets (name, size)
+    # 0 = keep original 1:1 pixel ratio (smallest possible)
+    # -1 = special "minimal" mode for ultra-low memory
     output_size_presets: Tuple[Tuple[str, int], ...] = (
-        ("Original", 0),  # 0 means keep original size
+        ("1:1 Píxel", 0),  # 0 means keep original 1:1 size (minimum memory)
         ("8×8", 8),
         ("16×16", 16),
         ("24×24", 24),

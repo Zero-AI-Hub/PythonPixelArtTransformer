@@ -66,8 +66,28 @@ class Step1Frame(ttk.Frame):
     
     def _create_widgets(self) -> None:
         """Create the UI widgets."""
+        from PIL import Image, ImageTk
+        
+        # Try to load and display the icon as background
+        icon_path = Path(__file__).parent.parent / "assets" / "icon.png"
+        self.bg_icon = None
+        
+        if icon_path.exists():
+            try:
+                img = Image.open(icon_path)
+                # Resize for background display
+                img = img.resize((200, 200), Image.Resampling.NEAREST)
+                self.bg_icon = ImageTk.PhotoImage(img)
+            except Exception:
+                pass
+        
+        # Background icon label (behind everything)
+        if self.bg_icon:
+            bg_label = tk.Label(self, image=self.bg_icon, bg=UI_COLORS.background)
+            bg_label.place(relx=0.5, rely=0.4, anchor=tk.CENTER)
+        
         center = ttk.Frame(self)
-        center.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        center.place(relx=0.5, rely=0.65, anchor=tk.CENTER)
         
         ttk.Label(
             center, 
@@ -339,10 +359,42 @@ class Step3Frame(ttk.Frame):
     
     def _create_widgets(self) -> None:
         """Create the UI widgets."""
-        # Left panel - controls
-        left = ttk.Frame(self, width=250)
-        left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
-        left.pack_propagate(False)
+        # Left panel - controls with scrollbar
+        left_container = ttk.Frame(self, width=260)
+        left_container.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
+        left_container.pack_propagate(False)
+        
+        # Create canvas and scrollbar for scrolling
+        self.left_canvas = tk.Canvas(
+            left_container, 
+            bg=UI_COLORS.background, 
+            highlightthickness=0,
+            width=245
+        )
+        scrollbar = ttk.Scrollbar(left_container, orient="vertical", command=self.left_canvas.yview)
+        
+        # Create frame inside canvas to hold all widgets
+        left = ttk.Frame(self.left_canvas)
+        
+        # Configure scroll region
+        def configure_scroll(event):
+            self.left_canvas.configure(scrollregion=self.left_canvas.bbox("all"))
+        
+        left.bind("<Configure>", configure_scroll)
+        
+        # Create window in canvas
+        self.left_canvas.create_window((0, 0), window=left, anchor="nw")
+        self.left_canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Pack scrollbar and canvas
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.left_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Enable mouse wheel scrolling
+        def on_mousewheel(event):
+            self.left_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        self.left_canvas.bind_all("<MouseWheel>", on_mousewheel)
         
         # Region navigation
         nav_region = ttk.Frame(left)
@@ -373,13 +425,15 @@ class Step3Frame(ttk.Frame):
         mode_frame = ttk.LabelFrame(left, text="🎯 Modo de Edición", padding=5)
         mode_frame.pack(fill=tk.X, padx=5, pady=3)
         
-        self.current_mode = tk.StringVar(value="pan_zoom")
+        self.current_mode = tk.StringVar(value="define_pixel")
         
         modes = [
+            ("📍 Definir Píxel", "define_pixel"),
             ("🔍 Pan/Zoom", "pan_zoom"),
             ("📏 Ajustar Grid", "adjust_grid"),
             ("✋ Seleccionar", "select_cells"),
             ("🔲 Área", "area_select"),
+            ("✏️ Contorno", "contour_select"),
         ]
         
         for text, value in modes:
@@ -389,9 +443,16 @@ class Step3Frame(ttk.Frame):
                 command=self._on_mode_changed
             ).pack(anchor=tk.W)
         
+        # Apply pixel definition button
+        self.apply_pixel_btn = ttk.Button(
+            mode_frame, text="✓ Aplicar Píxel",
+            command=self._apply_pixel_definition
+        )
+        self.apply_pixel_btn.pack(fill=tk.X, pady=(5, 0))
+        
         # Mode help text
         self.mode_help = ttk.Label(
-            mode_frame, text="Scroll: zoom | Click derecho: pan",
+            mode_frame, text="Arrastra sobre UN píxel para definir el grid",
             style='Info.TLabel', wraplength=200
         )
         self.mode_help.pack(anchor=tk.W, pady=(5, 0))
@@ -493,6 +554,28 @@ class Step3Frame(ttk.Frame):
             command=self._clear_area_selection, width=8
         ).pack(side=tk.LEFT, padx=1)
         
+        # ===== CONTOUR SELECTION BUTTONS =====
+        contour_label = ttk.Label(sel_frame, text="Selección por contorno:", style='Info.TLabel')
+        contour_label.pack(anchor=tk.W, pady=(5, 2))
+        
+        btn_row3 = ttk.Frame(sel_frame)
+        btn_row3.pack(fill=tk.X)
+        
+        ttk.Button(
+            btn_row3, text="✓ Interior",
+            command=self._include_contour_cells, width=8
+        ).pack(side=tk.LEFT, padx=1)
+        
+        ttk.Button(
+            btn_row3, text="✗ Exterior",
+            command=self._exclude_outside_contour, width=8
+        ).pack(side=tk.LEFT, padx=1)
+        
+        ttk.Button(
+            btn_row3, text="⌫ Limpiar",
+            command=self._clear_contour, width=8
+        ).pack(side=tk.LEFT, padx=1)
+        
         self.cell_info = ttk.Label(
             sel_frame, text="Celdas: 0×0 | Excluidas: 0",
             style='Info.TLabel'
@@ -588,12 +671,53 @@ class Step3Frame(ttk.Frame):
         
         # Update help text
         help_texts = {
+            "define_pixel": "Arrastra sobre UN píxel para definir tamaño y posición del grid",
             "pan_zoom": "Scroll: zoom | Click derecho: pan",
             "adjust_grid": "Arrastrar líneas del grid para ajustar",
             "select_cells": "Click en celdas para excluir/incluir",
             "area_select": "Dibuja un área y usa botones para incluir/excluir",
+            "contour_select": "Click para añadir puntos. Click cerca del inicio para cerrar. Click derecho: deshacer",
         }
         self.mode_help.config(text=help_texts.get(mode_str, ""))
+    
+    def _apply_pixel_definition(self) -> None:
+        """Apply the pixel definition to set up the grid."""
+        if not self.canvas.has_pixel_definition():
+            messagebox.showinfo("Info", "Primero arrastra sobre un píxel para definirlo")
+            return
+        
+        defined = self.canvas.get_defined_pixel()
+        if not defined:
+            return
+        
+        width, height, offset_x, offset_y = defined
+        
+        # Use the larger dimension as cell size (for square cells)
+        # or average for rectangular
+        cell_size = max(width, height)
+        
+        # Update UI values
+        self.grid_size.set(cell_size)
+        self.offset_x.set(offset_x % cell_size)  # Wrap offset to grid period
+        self.offset_y.set(offset_y % cell_size)
+        
+        # Apply the grid
+        self.canvas.reset_to_uniform(cell_size, offset_x % cell_size, offset_y % cell_size)
+        self._update_cell_info()
+        
+        # Clear the pixel definition visualization
+        self.canvas.clear_pixel_definition()
+        
+        # Switch to pan/zoom mode
+        self.current_mode.set("pan_zoom")
+        self._on_mode_changed()
+        
+        messagebox.showinfo(
+            "Grid Aplicado",
+            f"✅ Grid configurado:\n"
+            f"• Tamaño de celda: {cell_size}px\n"
+            f"• Offset: ({offset_x % cell_size}, {offset_y % cell_size})"
+        )
     
     def _on_auto_detect_changed(self) -> None:
         """Handle auto-detect checkbox change."""
@@ -648,6 +772,26 @@ class Step3Frame(ttk.Frame):
     def _clear_area_selection(self) -> None:
         """Clear the area selection."""
         self.canvas.clear_area_selection()
+    
+    def _include_contour_cells(self) -> None:
+        """Include all cells inside the contour."""
+        if not self.canvas.is_contour_closed():
+            messagebox.showinfo("Info", "Dibuja y cierra primero un contorno en modo '✏️ Contorno'")
+            return
+        changed = self.canvas.include_cells_in_contour()
+        self._update_cell_info()
+    
+    def _exclude_outside_contour(self) -> None:
+        """Exclude all cells outside the contour."""
+        if not self.canvas.is_contour_closed():
+            messagebox.showinfo("Info", "Dibuja y cierra primero un contorno en modo '✏️ Contorno'")
+            return
+        changed = self.canvas.exclude_cells_outside_contour()
+        self._update_cell_info()
+    
+    def _clear_contour(self) -> None:
+        """Clear the contour."""
+        self.canvas.clear_contour()
     
     def _on_grid_changed(self, config) -> None:
         """Handle grid configuration change from canvas."""
@@ -875,7 +1019,7 @@ class Step4Frame(ttk.Frame):
         size_frame = ttk.LabelFrame(left, text="📐 Tamaño de Salida", padding=5)
         size_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        self.output_size = tk.StringVar(value="Original")
+        self.output_size = tk.StringVar(value="1:1 Píxel")
         size_combo = ttk.Combobox(
             size_frame,
             textvariable=self.output_size,
@@ -887,7 +1031,7 @@ class Step4Frame(ttk.Frame):
         size_combo.bind('<<ComboboxSelected>>', self._on_size_changed)
         
         self.size_info = ttk.Label(
-            size_frame, text="",
+            size_frame, text="(mínima memoria)",
             style='Info.TLabel'
         )
         self.size_info.pack(side=tk.LEFT, padx=5)
@@ -904,6 +1048,36 @@ class Step4Frame(ttk.Frame):
             left, text="💾 Guardar Seleccionado", 
             command=self._save_selected
         ).pack(fill=tk.X, padx=5)
+        
+        # ===== CLIPBOARD EXPORT =====
+        clip_frame = ttk.LabelFrame(left, text="📋 Copiar al Portapapeles", padding=5)
+        clip_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        clip_row1 = ttk.Frame(clip_frame)
+        clip_row1.pack(fill=tk.X)
+        
+        ttk.Button(
+            clip_row1, text="Bytes",
+            command=lambda: self._copy_to_clipboard("bytes"), width=7
+        ).pack(side=tk.LEFT, padx=1)
+        
+        ttk.Button(
+            clip_row1, text="Base64",
+            command=lambda: self._copy_to_clipboard("base64"), width=7
+        ).pack(side=tk.LEFT, padx=1)
+        
+        clip_row2 = ttk.Frame(clip_frame)
+        clip_row2.pack(fill=tk.X, pady=(2, 0))
+        
+        ttk.Button(
+            clip_row2, text="NumPy",
+            command=lambda: self._copy_to_clipboard("numpy"), width=7
+        ).pack(side=tk.LEFT, padx=1)
+        
+        ttk.Button(
+            clip_row2, text="Bitmap",
+            command=lambda: self._copy_to_clipboard("bitmap"), width=7
+        ).pack(side=tk.LEFT, padx=1)
         
         ttk.Separator(left, orient='horizontal').pack(fill=tk.X, pady=10)
         
@@ -977,9 +1151,94 @@ class Step4Frame(ttk.Frame):
         """Handle output size preset change."""
         target = self._get_target_size()
         if target == 0:
-            self.size_info.config(text="")
+            self.size_info.config(text="(mínima memoria)")
         else:
             self.size_info.config(text=f"→ {target}×{target}px")
+    
+    def _get_selected_image(self) -> PILImage | None:
+        """Get the currently selected result image."""
+        sel = self.result_list.curselection()
+        if not sel:
+            return None
+        idx = list(self.results.keys())[sel[0]]
+        return self.results.get(idx)
+    
+    def _copy_to_clipboard(self, format_type: str) -> None:
+        """
+        Copy the selected image to clipboard in the specified format.
+        
+        Args:
+            format_type: One of 'bytes', 'base64', 'numpy', 'bitmap'
+        """
+        import io
+        import base64
+        
+        img = self._get_selected_image()
+        if img is None:
+            messagebox.showinfo("Info", "Selecciona primero una región de la lista")
+            return
+        
+        # Resize if needed
+        target_size = self._get_target_size()
+        img = self._resize_image(img, target_size)
+        
+        try:
+            if format_type == "bytes":
+                # Raw bytes as Python literal
+                buffer = io.BytesIO()
+                img.save(buffer, format='PNG')
+                raw_bytes = buffer.getvalue()
+                text = repr(raw_bytes)
+                
+            elif format_type == "base64":
+                # Base64 encoded string
+                buffer = io.BytesIO()
+                img.save(buffer, format='PNG')
+                b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                text = b64
+                
+            elif format_type == "numpy":
+                # NumPy array representation
+                try:
+                    import numpy as np
+                    arr = np.array(img)
+                    text = f"np.array({arr.tolist()}, dtype=np.uint8)  # shape: {arr.shape}"
+                except ImportError:
+                    # If numpy not available, use list format
+                    pixels = list(img.getdata())
+                    w, h = img.size
+                    text = f"# Image {w}x{h}, RGBA\n{pixels}"
+                    
+            elif format_type == "bitmap":
+                # Bitmap as binary string (1-bit representation)
+                gray = img.convert('L')
+                w, h = gray.size
+                lines = []
+                lines.append(f"# Bitmap {w}x{h}")
+                for y in range(h):
+                    row = ""
+                    for x in range(w):
+                        pixel = gray.getpixel((x, y))
+                        row += "█" if pixel > 127 else " "
+                    lines.append(f'"{row}"')
+                text = "\n".join(lines)
+            else:
+                text = ""
+            
+            # Copy to clipboard
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            self.update()  # Required for clipboard to persist
+            
+            # Show success
+            size_kb = len(text) / 1024
+            messagebox.showinfo(
+                "Copiado", 
+                f"✅ Copiado al portapapeles\nFormato: {format_type}\nTamaño: {size_kb:.1f} KB"
+            )
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Error al copiar:\n{e}")
     
     def set_results(
         self, 

@@ -343,23 +343,106 @@ class PixelArtTransformerGUI:
 
 def main() -> None:
     """Main entry point for the GUI application."""
-    root = tk.Tk()
+    from PIL import Image, ImageTk
+    import os
     
-    try:
-        app = PixelArtTransformerGUI(root)
+    # Get the directory where the script is located
+    script_dir = Path(__file__).parent
+    icon_path = script_dir / "assets" / "icon.png"
+    
+    # Create splash screen
+    splash = tk.Tk()
+    splash.title("")
+    splash.overrideredirect(True)  # Remove window decorations
+    splash.configure(bg='#1a1a2e')
+    
+    # Center splash screen
+    splash_width, splash_height = 300, 350
+    screen_width = splash.winfo_screenwidth()
+    screen_height = splash.winfo_screenheight()
+    x = (screen_width - splash_width) // 2
+    y = (screen_height - splash_height) // 2
+    splash.geometry(f'{splash_width}x{splash_height}+{x}+{y}')
+    
+    # Load and display icon on splash
+    splash_icon = None
+    if icon_path.exists():
+        try:
+            img = Image.open(icon_path)
+            # Resize for splash screen
+            img = img.resize((150, 150), Image.Resampling.NEAREST)
+            splash_icon = ImageTk.PhotoImage(img)
+        except Exception:
+            pass
+    
+    # Splash content
+    if splash_icon:
+        icon_label = tk.Label(splash, image=splash_icon, bg='#1a1a2e')
+        icon_label.pack(pady=30)
+    
+    title_label = tk.Label(
+        splash, 
+        text="🎨 Pixel Art Transformer",
+        font=('Segoe UI', 16, 'bold'),
+        fg='#e94560',
+        bg='#1a1a2e'
+    )
+    title_label.pack(pady=10)
+    
+    version_label = tk.Label(
+        splash,
+        text="v6.0",
+        font=('Segoe UI', 10),
+        fg='#888888',
+        bg='#1a1a2e'
+    )
+    version_label.pack()
+    
+    loading_label = tk.Label(
+        splash,
+        text="Cargando...",
+        font=('Segoe UI', 9),
+        fg='#00ff88',
+        bg='#1a1a2e'
+    )
+    loading_label.pack(pady=20)
+    
+    splash.update()
+    
+    # Close splash and create main window after delay
+    def start_main_app():
+        splash.destroy()
         
-        # Center window
-        root.update_idletasks()
-        x = (root.winfo_screenwidth() // 2) - (root.winfo_width() // 2)
-        y = (root.winfo_screenheight() // 2) - (root.winfo_height() // 2)
-        root.geometry(f'+{x}+{y}')
+        root = tk.Tk()
         
-        root.mainloop()
+        # Set app icon
+        if icon_path.exists():
+            try:
+                icon_img = Image.open(icon_path)
+                icon_photo = ImageTk.PhotoImage(icon_img)
+                root.iconphoto(True, icon_photo)
+            except Exception:
+                pass
         
-    except Exception as e:
-        logger.exception("Fatal error")
-        messagebox.showerror("Error Fatal", f"La aplicación encontró un error:\n{e}")
-        raise
+        try:
+            app = PixelArtTransformerGUI(root)
+            
+            # Center window
+            root.update_idletasks()
+            x = (root.winfo_screenwidth() // 2) - (root.winfo_width() // 2)
+            y = (root.winfo_screenheight() // 2) - (root.winfo_height() // 2)
+            root.geometry(f'+{x}+{y}')
+            
+            root.mainloop()
+            
+        except Exception as e:
+            logger.exception("Fatal error")
+            messagebox.showerror("Error Fatal", f"La aplicación encontró un error:\n{e}")
+            raise
+    
+    # Show splash for 1.5 seconds then start main app
+    splash.after(1500, start_main_app)
+    splash.mainloop()
 
 
 if __name__ == '__main__':

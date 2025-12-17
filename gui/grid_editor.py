@@ -34,6 +34,8 @@ class EditorMode(Enum):
     ADJUST_GRID = "adjust_grid"
     SELECT_CELLS = "select_cells"
     AREA_SELECT = "area_select"
+    CONTOUR_SELECT = "contour_select"
+    DEFINE_PIXEL = "define_pixel"
 
 
 class DragTarget(Enum):
@@ -219,12 +221,23 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
         self._area_end: tuple[int, int] | None = None    # Image coordinates
         self._area_rect_id: int | None = None
         
+        # Contour selection state
+        self._contour_points: list[tuple[int, int]] = []  # Image coordinates
+        self._contour_closed = False
+        
+        # Pixel definition state
+        self._pixel_defining = False
+        self._pixel_start: tuple[int, int] | None = None  # Image coordinates
+        self._pixel_end: tuple[int, int] | None = None    # Image coordinates
+        self._on_pixel_defined: Callable[[int, int, int, int], None] | None = None  # (size_w, size_h, off_x, off_y)
+        
         # Rebind events
         self.bind('<Motion>', self._on_motion)
         self.bind('<ButtonPress-1>', self._on_press)
         self.bind('<B1-Motion>', self._on_drag)
         self.bind('<ButtonRelease-1>', self._on_release)
         self.bind('<Leave>', self._on_leave)
+        self.bind('<ButtonPress-3>', self._on_right_click)
     
     def enable_eyedropper(self, callback: Callable[[tuple[int, int, int]], None]) -> None:
         """
@@ -397,6 +410,165 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
         """Check if there is an active area selection."""
         return self._area_start is not None and self._area_end is not None
     
+    # =========================================================================
+    # CONTOUR SELECTION METHODS
+    # =========================================================================
+    
+    def _point_in_polygon(self, x: int, y: int, polygon: list[tuple[int, int]]) -> bool:
+        """
+        Check if a point is inside a polygon using ray casting algorithm.
+        
+        Args:
+            x, y: Point coordinates
+            polygon: List of (x, y) vertex coordinates
+            
+        Returns:
+            True if point is inside the polygon.
+        """
+        n = len(polygon)
+        if n < 3:
+            return False
+        
+        inside = False
+        j = n - 1
+        
+        for i in range(n):
+            xi, yi = polygon[i]
+            xj, yj = polygon[j]
+            
+            if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+                inside = not inside
+            j = i
+        
+        return inside
+    
+    def get_cells_in_contour(self) -> list[tuple[int, int]]:
+        """
+        Get all cells whose centers are inside the current contour polygon.
+        
+        Returns:
+            List of (col, row) tuples for cells inside the contour.
+        """
+        if not self._contour_closed or len(self._contour_points) < 3:
+            return []
+        
+        cells = []
+        for col in range(self.grid_config.num_cols):
+            for row in range(self.grid_config.num_rows):
+                cx, cy = self.grid_config.get_cell_center(col, row)
+                if self._point_in_polygon(cx, cy, self._contour_points):
+                    cells.append((col, row))
+        
+        return cells
+    
+    def include_cells_in_contour(self) -> int:
+        """
+        Include (un-exclude) all cells inside the contour polygon.
+        
+        Returns:
+            Number of cells that were changed.
+        """
+        cells = self.get_cells_in_contour()
+        changed = 0
+        for col, row in cells:
+            if (col, row) in self.grid_config.excluded_cells:
+                self.grid_config.excluded_cells.remove((col, row))
+                changed += 1
+        
+        if changed:
+            self._notify_change()
+            self.redraw()
+        return changed
+    
+    def exclude_cells_outside_contour(self) -> int:
+        """
+        Exclude all cells outside the contour polygon.
+        
+        Returns:
+            Number of cells that were changed.
+        """
+        cells_inside = set(self.get_cells_in_contour())
+        changed = 0
+        
+        for col in range(self.grid_config.num_cols):
+            for row in range(self.grid_config.num_rows):
+                if (col, row) not in cells_inside:
+                    if (col, row) not in self.grid_config.excluded_cells:
+                        self.grid_config.excluded_cells.add((col, row))
+                        self.grid_config.included_cells.discard((col, row))
+                        changed += 1
+        
+        if changed:
+            self._notify_change()
+            self.redraw()
+        return changed
+    
+    def clear_contour(self) -> None:
+        """Clear the current contour polygon."""
+        self._contour_points = []
+        self._contour_closed = False
+        self.redraw()
+    
+    def close_contour(self) -> None:
+        """Close the contour polygon."""
+        if len(self._contour_points) >= 3:
+            self._contour_closed = True
+            self.redraw()
+    
+    def has_contour(self) -> bool:
+        """Check if there is a contour polygon defined."""
+        return len(self._contour_points) >= 3
+    
+    def is_contour_closed(self) -> bool:
+        """Check if the contour is closed."""
+        return self._contour_closed
+    
+    def undo_last_contour_point(self) -> None:
+        """Remove the last point from the contour."""
+        if self._contour_points:
+            self._contour_points.pop()
+            self._contour_closed = False
+            self.redraw()
+    
+    # =========================================================================
+    # PIXEL DEFINITION METHODS
+    # =========================================================================
+    
+    def set_pixel_defined_callback(self, callback: Callable[[int, int, int, int], None] | None) -> None:
+        """Set callback for when a pixel is defined. Args: (size_w, size_h, offset_x, offset_y)"""
+        self._on_pixel_defined = callback
+    
+    def get_defined_pixel(self) -> tuple[int, int, int, int] | None:
+        """
+        Get the defined pixel dimensions and offset.
+        
+        Returns:
+            Tuple of (width, height, offset_x, offset_y) or None if not defined.
+        """
+        if self._pixel_start is None or self._pixel_end is None:
+            return None
+        
+        x1 = min(self._pixel_start[0], self._pixel_end[0])
+        y1 = min(self._pixel_start[1], self._pixel_end[1])
+        x2 = max(self._pixel_start[0], self._pixel_end[0])
+        y2 = max(self._pixel_start[1], self._pixel_end[1])
+        
+        width = max(1, x2 - x1)
+        height = max(1, y2 - y1)
+        
+        return (width, height, x1, y1)
+    
+    def clear_pixel_definition(self) -> None:
+        """Clear the pixel definition."""
+        self._pixel_start = None
+        self._pixel_end = None
+        self._pixel_defining = False
+        self.redraw()
+    
+    def has_pixel_definition(self) -> bool:
+        """Check if a pixel has been defined."""
+        return self._pixel_start is not None and self._pixel_end is not None
+    
     def _update_cursor(self) -> None:
         """Update cursor based on mode and hover state."""
         if self.mode == EditorMode.PAN_ZOOM:
@@ -405,6 +577,10 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
             self.config(cursor='hand2')
         elif self.mode == EditorMode.AREA_SELECT:
             self.config(cursor='cross')
+        elif self.mode == EditorMode.CONTOUR_SELECT:
+            self.config(cursor='pencil')
+        elif self.mode == EditorMode.DEFINE_PIXEL:
+            self.config(cursor='tcross')
         elif self.mode == EditorMode.ADJUST_GRID:
             if self._hover_line:
                 target, _ = self._hover_line
@@ -447,6 +623,12 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
         
         # Draw area selection rectangle
         self._draw_area_selection()
+        
+        # Draw contour polygon
+        self._draw_contour()
+        
+        # Draw pixel definition
+        self._draw_pixel_definition()
         
         # Draw info
         self._draw_info_text()
@@ -624,6 +806,111 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
             tags='area_selection'
         )
     
+    def _draw_contour(self) -> None:
+        """Draw the contour polygon."""
+        if self.mode != EditorMode.CONTOUR_SELECT:
+            return
+        
+        if not self._contour_points:
+            return
+        
+        # Convert image coordinates to screen coordinates
+        screen_points = []
+        for ix, iy in self._contour_points:
+            sx = self.img_x + int(ix * self.zoom_level)
+            sy = self.img_y + int(iy * self.zoom_level)
+            screen_points.append((sx, sy))
+        
+        # Draw lines between points
+        for i in range(len(screen_points)):
+            sx1, sy1 = screen_points[i]
+            if i < len(screen_points) - 1:
+                sx2, sy2 = screen_points[i + 1]
+            elif self._contour_closed:
+                sx2, sy2 = screen_points[0]
+            else:
+                continue
+            
+            self.create_line(
+                sx1, sy1, sx2, sy2,
+                fill='#ff00ff',
+                width=2,
+                tags='contour_line'
+            )
+        
+        # Draw vertices
+        for i, (sx, sy) in enumerate(screen_points):
+            r = 5
+            color = '#00ff00' if i == 0 else '#ff00ff'
+            outline = '#ffffff' if i == 0 else '#000000'
+            self.create_oval(
+                sx - r, sy - r, sx + r, sy + r,
+                fill=color,
+                outline=outline,
+                width=2,
+                tags='contour_vertex'
+            )
+        
+        # Highlight cells inside closed contour
+        if self._contour_closed:
+            cells_inside = self.get_cells_in_contour()
+            for col, row in cells_inside:
+                x1, y1, x2, y2 = self.grid_config.get_cell_bounds(col, row)
+                sx1 = self.img_x + int(x1 * self.zoom_level)
+                sy1 = self.img_y + int(y1 * self.zoom_level)
+                sx2 = self.img_x + int(x2 * self.zoom_level)
+                sy2 = self.img_y + int(y2 * self.zoom_level)
+                
+                self.create_rectangle(
+                    sx1, sy1, sx2, sy2,
+                    fill='#ff00ff',
+                    stipple='gray50',
+                    outline='#ff00ff',
+                    width=1,
+                    tags='cell_contour'
+                )
+    
+    def _draw_pixel_definition(self) -> None:
+        """Draw the pixel definition rectangle."""
+        if self.mode != EditorMode.DEFINE_PIXEL:
+            return
+        
+        if self._pixel_start is None:
+            return
+        
+        # Get the current end point (either set or still dragging)
+        end = self._pixel_end if self._pixel_end else self._pixel_start
+        
+        # Convert image coordinates to screen coordinates
+        sx1 = self.img_x + int(self._pixel_start[0] * self.zoom_level)
+        sy1 = self.img_y + int(self._pixel_start[1] * self.zoom_level)
+        sx2 = self.img_x + int(end[0] * self.zoom_level)
+        sy2 = self.img_y + int(end[1] * self.zoom_level)
+        
+        # Draw solid bright rectangle for the defined pixel
+        self.create_rectangle(
+            sx1, sy1, sx2, sy2,
+            outline='#00ff00',
+            fill='#00ff00',
+            stipple='gray50',
+            width=3,
+            tags='pixel_definition'
+        )
+        
+        # Draw dimensions text
+        if self._pixel_end:
+            defined = self.get_defined_pixel()
+            if defined:
+                w, h, _, _ = defined
+                text = f"{w}×{h}"
+                self.create_text(
+                    (sx1 + sx2) // 2, sy1 - 10,
+                    text=text,
+                    fill='#00ff00',
+                    font=('Segoe UI', 10, 'bold'),
+                    tags='pixel_size'
+                )
+    
     def _draw_info_text(self) -> None:
         """Draw info text."""
         zoom_pct = int(self.zoom_level * 100)
@@ -631,7 +918,9 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
             EditorMode.PAN_ZOOM: "🔍 Pan/Zoom",
             EditorMode.ADJUST_GRID: "📏 Ajustar Grid",
             EditorMode.SELECT_CELLS: "✋ Seleccionar",
-            EditorMode.AREA_SELECT: "🔲 Área"
+            EditorMode.AREA_SELECT: "🔲 Área",
+            EditorMode.CONTOUR_SELECT: "✏️ Contorno",
+            EditorMode.DEFINE_PIXEL: "📍 Definir Píxel"
         }.get(self.mode, "")
         
         cols = self.grid_config.num_cols
@@ -643,6 +932,25 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
         if self.mode == EditorMode.AREA_SELECT and self.has_area_selection():
             cells_in_area = len(self.get_cells_in_area())
             area_info = f" | Selección: {cells_in_area}"
+        
+        # Add contour info
+        if self.mode == EditorMode.CONTOUR_SELECT:
+            pts = len(self._contour_points)
+            if self._contour_closed:
+                cells_inside = len(self.get_cells_in_contour())
+                area_info = f" | Cerrado: {cells_inside} celdas"
+            elif pts > 0:
+                area_info = f" | Puntos: {pts}"
+        
+        # Add pixel definition info
+        if self.mode == EditorMode.DEFINE_PIXEL:
+            if self.has_pixel_definition():
+                defined = self.get_defined_pixel()
+                if defined:
+                    w, h, ox, oy = defined
+                    area_info = f" | Píxel: {w}×{h} @ ({ox},{oy})"
+            else:
+                area_info = " | Arrastra sobre un píxel"
         
         info_lines = [
             f"Zoom: {zoom_pct}% | {mode_text}",
@@ -787,6 +1095,36 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
             self._area_start = (ix, iy)
             self._area_end = (ix, iy)
             self.redraw()
+        
+        elif self.mode == EditorMode.CONTOUR_SELECT:
+            ix, iy = self.screen_to_image(event.x, event.y)
+            
+            # Check if clicking near first point to close polygon
+            if len(self._contour_points) >= 3 and not self._contour_closed:
+                first_x, first_y = self._contour_points[0]
+                dist = ((ix - first_x) ** 2 + (iy - first_y) ** 2) ** 0.5
+                close_threshold = max(10, 20 / self.zoom_level)  # Pixels in image coords
+                
+                if dist <= close_threshold:
+                    self.close_contour()
+                    return
+            
+            # If contour is closed, start a new one
+            if self._contour_closed:
+                self._contour_points = []
+                self._contour_closed = False
+            
+            # Add new point
+            self._contour_points.append((ix, iy))
+            self.redraw()
+        
+        elif self.mode == EditorMode.DEFINE_PIXEL:
+            # Start pixel definition
+            ix, iy = self.screen_to_image(event.x, event.y)
+            self._pixel_defining = True
+            self._pixel_start = (ix, iy)
+            self._pixel_end = (ix, iy)
+            self.redraw()
     
     def _on_drag(self, event: tk.Event) -> None:
         """Handle mouse drag."""
@@ -816,6 +1154,12 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
             # Update area selection end point
             ix, iy = self.screen_to_image(event.x, event.y)
             self._area_end = (ix, iy)
+            self.redraw()
+        
+        elif self.mode == EditorMode.DEFINE_PIXEL and self._pixel_defining:
+            # Update pixel definition end point
+            ix, iy = self.screen_to_image(event.x, event.y)
+            self._pixel_end = (ix, iy)
             self.redraw()
     
     def _handle_grid_drag(self, event: tk.Event) -> None:
@@ -884,6 +1228,21 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
             self._area_selecting = False
             self.redraw()
         
+        if self._pixel_defining:
+            # Finalize pixel definition
+            ix, iy = self.screen_to_image(event.x, event.y)
+            self._pixel_end = (ix, iy)
+            self._pixel_defining = False
+            
+            # Trigger callback if set
+            if self._on_pixel_defined:
+                defined = self.get_defined_pixel()
+                if defined:
+                    w, h, ox, oy = defined
+                    self._on_pixel_defined(w, h, ox, oy)
+            
+            self.redraw()
+        
         self._update_cursor()
     
     def _on_leave(self, event: tk.Event) -> None:
@@ -892,3 +1251,8 @@ class AdvancedGridEditorCanvas(BaseZoomableCanvas):
             self._hover_line = None
             self._hover_cell = None
             self.redraw()
+    
+    def _on_right_click(self, event: tk.Event) -> None:
+        """Handle right mouse click."""
+        if self.mode == EditorMode.CONTOUR_SELECT:
+            self.undo_last_contour_point()

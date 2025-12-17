@@ -1,10 +1,14 @@
 # 🎨 Pixel Art Transformer
 
 <p align="center">
+  <img src="assets/icon.png" alt="Pixel Art Transformer Logo" width="100">
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-green" alt="Platform">
   <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License">
-  <img src="https://img.shields.io/badge/Tests-Passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/Version-6.1-brightgreen" alt="Version">
 </p>
 
 Convert upscaled pixel art images to their **true pixel dimensions** (1 pixel = 1 pixel).
@@ -13,14 +17,30 @@ Takes any upscaled pixel art image, automatically detects the original pixel gri
 
 ## ✨ Features
 
+### Core Features
 - 🔍 **Auto-detection** of pixel size using pattern analysis
 - 📐 **Grid visualization** overlay with center markers
 - 🎯 **Center sampling** for accurate color preservation
 - 🚫 **Color exclusion** with tolerance control
 - 🎨 **Bit depth reduction** for retro palette effects
-- 💾 **Lossless PNG** export
+- 💾 **Lossless PNG** export with preset sizes (8×8 to 256×256)
 - 🖥️ **GUI** and **CLI** interfaces
-- 🧪 **Comprehensive test suite**
+
+### Advanced Selection Tools
+- 📍 **Define Pixel Mode** - Click and drag over a single pixel to set grid size and offset perfectly
+- 🔲 **Area Selection** - Draw rectangles to include/exclude multiple cells
+- ✏️ **Contour/Lasso Selection** - Draw polygons around sprites for precise selection
+- 📏 **Manual Grid Adjustment** - Drag grid lines to fine-tune alignment
+
+### Export Options
+- 📋 **Clipboard Export** - Copy images as Bytes, Base64, NumPy array, or ASCII Bitmap
+- 📐 **Preset Sizes** - Export to standard pixel art dimensions (1:1, 8×8, 16×16, 32×32, etc.)
+- 💾 **Batch Save** - Save all regions at once
+
+### UI/UX
+- 🎨 **Splash Screen** - Professional loading screen with app icon
+- 📱 **Responsive Layout** - Scrollable panels for smaller windows
+- 🔄 **Smooth Zoom/Pan** - Mouse wheel zoom and drag navigation
 
 ## 🚀 Quick Start
 
@@ -56,8 +76,15 @@ python pixel_art_gui.py
 The GUI provides a wizard-style workflow:
 1. **Load** - Select your upscaled pixel art image
 2. **Select** - Draw rectangles around sprites/regions
-3. **Configure** - Adjust grid size, colors, and exclusions
-4. **Generate** - Export transformed images
+3. **Configure** - Use **Define Pixel** mode for perfect grid alignment
+4. **Generate** - Export transformed images in various formats
+
+### Define Pixel Mode (New!)
+The easiest way to set up your grid:
+1. Select "📍 Definir Píxel" mode
+2. Click and drag over ONE pixel in your image
+3. Click "✓ Aplicar Píxel"
+4. The grid automatically aligns perfectly!
 
 ### Command Line
 
@@ -73,9 +100,6 @@ python pixel_art_transformer.py image.png --grid-size 16
 
 # Custom output name
 python pixel_art_transformer.py image.png -o output.png
-
-# Verbose mode
-python pixel_art_transformer.py image.png -v
 ```
 
 ### Python API
@@ -110,6 +134,8 @@ PythonPixelArtTransformer/
 ├── pixel_art_gui.py          # Main GUI application
 ├── pixel_art_transformer.py  # CLI application
 ├── config.py                 # Centralized configuration
+├── assets/                   # Application assets
+│   └── icon.png             # App icon
 ├── core/                     # Core processing logic
 │   ├── __init__.py
 │   ├── transformer.py        # Image processing functions
@@ -117,19 +143,12 @@ PythonPixelArtTransformer/
 ├── gui/                      # GUI components
 │   ├── __init__.py
 │   ├── canvases.py          # Zoomable canvas widgets
+│   ├── grid_editor.py       # Advanced grid editor
 │   └── steps.py             # Wizard step frames
 ├── tests/                    # Test suite
-│   ├── __init__.py
-│   ├── test_transformer.py
-│   └── test_config.py
 ├── examples/                 # Example files
-│   └── create_test_image.py
 ├── requirements.txt          # Production dependencies
-├── requirements-dev.txt      # Development dependencies
-├── install.sh               # Linux/macOS installer
-├── install.bat              # Windows installer
-├── run.sh                   # Linux/macOS runner
-└── run.bat                  # Windows runner
+└── requirements-dev.txt      # Development dependencies
 ```
 
 ## 🧪 Testing
@@ -143,9 +162,6 @@ python -m pytest tests/ -v
 
 # With coverage
 python -m pytest tests/ -v --cov=core --cov-report=html
-
-# Type checking
-python -m mypy core/ --ignore-missing-imports
 ```
 
 ## 📋 Requirements
@@ -166,8 +182,7 @@ All settings are centralized in `config.py`:
 | `GRID_DETECTION` | Auto-detection thresholds |
 | `REGION` | Region selection parameters |
 | `COLOR` | Bit depth options |
-| `WINDOW` | Window dimensions |
-| `FILE` | Supported formats and suffixes |
+| `FILE` | Output size presets |
 
 ## 🖼️ Example Results
 
@@ -181,22 +196,18 @@ All settings are centralized in `config.py`:
   <em>Original Image (1024×1024)</em> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <em>Pixel Art (30×30 → 64×64)</em>
 </p>
 
-The tool automatically:
-1. Detects optimal grid size based on image dimensions
-2. Samples center color of each cell
-3. Exports to standard pixel art sizes (8×8, 16×16, 32×32, 64×64, etc.)
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Write tests for your changes
-4. Ensure all tests pass: `python -m pytest tests/ -v`
-5. Commit your changes: `git commit -m 'Add amazing feature'`
-6. Push to the branch: `git push origin feature/amazing-feature`
-7. Open a Pull Request
-
 ## 📝 Changelog
+
+### v6.1.0 (2024-12)
+- ✨ **Define Pixel Mode** - Click and drag to define grid size/offset
+- ✨ **Contour Selection** - Lasso tool for polygon selection
+- ✨ **Area Selection** - Rectangle selection tool
+- ✨ **Clipboard Export** - Copy as Bytes, Base64, NumPy, Bitmap
+- ✨ **Preset Output Sizes** - 1:1 Pixel, 8×8 to 256×256
+- ✨ **Splash Screen** - Professional loading screen
+- ✨ **App Icon** - Custom application icon
+- ✨ **Responsive UI** - Scrollable panels for small windows
+- 🐛 Improved grid auto-detection for problematic images
 
 ### v6.0.0 (2024-12)
 - Complete codebase refactoring
@@ -205,8 +216,6 @@ The tool automatically:
 - Custom exceptions for better error handling
 - Comprehensive test suite
 - Type hints throughout
-- Windows batch scripts
-- Improved documentation
 
 ### v5.0.0
 - Initial public release
