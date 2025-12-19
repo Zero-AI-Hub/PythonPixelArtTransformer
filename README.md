@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-green" alt="Platform">
   <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License">
-  <img src="https://img.shields.io/badge/Version-6.1-brightgreen" alt="Version">
+  <img src="https://img.shields.io/badge/Version-1.0-brightgreen" alt="Version">
 </p>
 
 Convert upscaled pixel art images to their **true pixel dimensions** (1 pixel = 1 pixel).
@@ -200,8 +200,10 @@ All settings are centralized in `config.py`:
 
 ## 📝 Changelog
 
-### v6.1.0 (2024-12)
-- ✨ **Define Pixel Mode** - Click and drag to define grid size/offset
+### v1.0.0 (2025-12-19)
+- ✨ **Initial Release**
+- 🔍 Auto-detection of pixel size using pattern analysis
+- 📍 **Define Pixel Mode** - Click and drag to define grid size/offset
 - ✨ **Contour Selection** - Lasso tool for polygon selection
 - ✨ **Area Selection** - Rectangle selection tool
 - ✨ **Clipboard Export** - Copy as Bytes, Base64, NumPy, Bitmap
@@ -209,21 +211,9 @@ All settings are centralized in `config.py`:
 - ✨ **Splash Screen** - Professional loading screen
 - ✨ **App Icon** - Custom application icon
 - ✨ **Responsive UI** - Scrollable panels for small windows
-- 🐛 Improved grid auto-detection for problematic images
-
-### v6.0.0 (2024-12)
-- Complete codebase refactoring
-- Modular architecture with `core/` and `gui/` packages
-- Centralized configuration in `config.py`
-- Custom exceptions for better error handling
-- Comprehensive test suite
-- Type hints throughout
-
-### v5.0.0
-- Initial public release
-- GUI with wizard workflow
-- CLI with auto-detection
-- Grid visualization
+- 🖥️ GUI wizard workflow and CLI interface
+- 📐 Modular architecture with `core/` and `gui/` packages
+- ⚙️ Centralized configuration in `config.py`
 
 ## 📄 License
 
